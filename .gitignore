@@ -1,0 +1,45 @@
+# Packaged app (made by builder.bat)
+/Wave/
+
+# C++ build output (backend + microphone effect)
+x64/
+Win32/
+Debug/
+Release/
+*.obj
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.iobj
+*.ipdb
+*.exp
+*.tlog
+*.lastbuildstate
+*.recipe
+*.log
+vcpkg_installed/
+
+# Rust / Tauri build output
+/frontend/src-tauri/target/
+/frontend/src-tauri/gen/schemas/
+
+# Node
+node_modules/
+dist/
+
+# Visual Studio / editor state
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Tools and OS files
+.claude/
+.DS_Store
+Thumbs.db
+desktop.ini

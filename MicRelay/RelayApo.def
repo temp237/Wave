@@ -1,0 +1,4 @@
+LIBRARY WaveMicApo
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

@@ -1,0 +1,8 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="../MicRelay/WaveMicApo.vcxproj" />
+  <Project Path="WaveBackend.vcxproj" Id="8e0282fe-a3f0-4586-b007-e7a003bf94a0" />
+</Solution>
