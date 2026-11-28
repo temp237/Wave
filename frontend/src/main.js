@@ -2131,7 +2131,9 @@ async function openSettings() {
 }
 
 function showCrossfade() {
-  const seconds = +$("#crossfadeSeconds").value;
+  const input = $("#crossfadeSeconds");
+  setRangeFill(input);
+  const seconds = +input.value;
   $("#crossfadeValue").textContent = seconds > 0 ? `${seconds} s` : "Off";
 }
 

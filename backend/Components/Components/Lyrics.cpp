@@ -28,6 +28,12 @@ bool Lyrics::NeedsWork(const std::string& Status, int StoredVersion)
 	return Status.empty() || (StoredVersion < Version && Status != "skipped");
 }
 
+void Lyrics::OnStored(std::function<void(const std::string&)> Handler)
+{
+	std::lock_guard lock(Mutex);
+	StoredHandler = std::move(Handler);
+}
+
 void Lyrics::Start()
 {
 	if (bRunning.exchange(true))
@@ -246,6 +252,13 @@ void Lyrics::Process(const std::string& Id, const std::filesystem::path& Path)
 		stored.push_back({ std::round(line.Start * 100.0) / 100.0, std::round(line.End * 100.0) / 100.0, line.Text });
 	const size_t count = stored.size();
 	Store(Id, std::move(stored), count ? "done" : "none", result->VocalStart, result->VocalEnd);
+	std::function<void(const std::string&)> handler;
+	{
+		std::lock_guard lock(Mutex);
+		handler = StoredHandler;
+	}
+	if (handler)
+		handler(Id);
 
 	const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 	std::ostringstream took;

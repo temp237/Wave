@@ -69,7 +69,11 @@ private:
 	static inline std::array<IMFMediaEngine*, EngineCount> Engines{};
 	static inline std::array<Notify*, EngineCount> Callbacks{};
 	static inline std::atomic<int> Current = 0;
+	static constexpr double MinFadeSeconds = 0.5;
+
 	static inline std::atomic<double> FadeSeconds = 0;
+	static inline std::atomic<double> PendingFade = 0;
+	static inline std::atomic<uint32_t> TrackChange = 0;
 	static inline std::function<void()> FadeHandler;
 	static inline std::atomic<PlayerStatus> Status = PlayerStatus::Stopped;
 	static inline std::string CurrentFileId;

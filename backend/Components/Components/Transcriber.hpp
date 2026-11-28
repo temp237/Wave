@@ -92,6 +92,8 @@ private:
 	static std::string RhymeKey(const std::string& Text);
 	static void FixTimings(std::vector<Word>& Words, const std::vector<Activity>& Active);
 	static void DropQuietSegments(std::vector<Word>& Words, const VocalMap& Map);
+	static double SingingFloor(const VocalMap& Map);
+	static void FindVocalBounds(const VocalMap& Map, double& Start, double& End);
 	static double LineCost(const std::vector<Word>& Words, size_t First, size_t Last);
 	static double BreakCost(const Word& Before, const Word& After, bool bMixedCase);
 	static std::string LineText(const std::vector<Word>& Words, size_t First, size_t Last);

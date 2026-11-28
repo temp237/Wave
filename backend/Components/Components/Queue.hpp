@@ -50,12 +50,14 @@ private:
 	struct SkipPoints {
 		double Start = 0;
 		double End = 0;
+		const char* Source = nullptr;
 	};
 
 	static constexpr double VocalMargin = 5.0;
 
 	static bool PlayCurrent(bool bCrossfade = false);
 	static void CrossfadeNext();
+	static void ApplySkipPoints(const std::string& Id);
 	static SkipPoints FindSkipPoints(const File& Track);
 	static void Broadcast();
 	static std::vector<std::string> Shuffled(std::vector<std::string> Ids);

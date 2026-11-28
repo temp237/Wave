@@ -41,6 +41,9 @@ void Queue::Init()
     Player::OnFadePoint([] {
         Worker.Post([] { CrossfadeNext(); });
     });
+    Lyrics::OnStored([](const std::string& Id) {
+        Worker.Post([Id] { ApplySkipPoints(Id); });
+    });
 }
 
 void Queue::Shutdown()
@@ -51,6 +54,7 @@ void Queue::Shutdown()
     }
     Player::OnEnded({});
     Player::OnFadePoint({});
+    Lyrics::OnStored({});
     Worker.Stop();
     ChangedHandler = {};
 }
@@ -79,6 +83,10 @@ bool Queue::PlayCurrent(bool bCrossfade)
         return false;
     }
     const SkipPoints points = FindSkipPoints(*file);
+    if (bSkipToVocals)
+        Logger::Info(points.Source
+            ? "[Queue] Skip to vocals (" + std::string(points.Source) + "): start " + std::to_string(static_cast<int>(points.Start)) + "s, end " + std::to_string(static_cast<int>(points.End)) + "s"
+            : std::string("[Queue] Skip to vocals: no vocal timing or cached lyrics yet for this song"));
     const bool ok = Player::Play(file->Path, id, points.Start, bCrossfade);
     if (ok)
         Player::SetEnd(points.End);
@@ -88,13 +96,48 @@ bool Queue::PlayCurrent(bool bCrossfade)
 Queue::SkipPoints Queue::FindSkipPoints(const File& Track)
 {
     SkipPoints points;
-    if (!bSkipToVocals || Track.VocalStart < 0 || Track.VocalEnd <= Track.VocalStart)
+    if (!bSkipToVocals)
         return points;
-    points.Start = std::max(0.0, Track.VocalStart - VocalMargin);
-    const double end = Track.VocalEnd + VocalMargin;
+    double vocalStart = -1.0;
+    double vocalEnd = -1.0;
+    if (Track.LyricsVersion >= Lyrics::Version && Track.VocalStart >= 0) {
+        vocalStart = Track.VocalStart;
+        vocalEnd = Track.VocalEnd;
+        points.Source = "vocals";
+    }
+    else if (!Track.Lyrics.empty()) {
+        vocalStart = Track.Lyrics.front().Start;
+        vocalEnd = Track.Lyrics.back().End;
+        points.Source = "cached lyrics";
+    }
+    if (vocalStart < 0 || vocalEnd <= vocalStart) {
+        points.Source = nullptr;
+        return points;
+    }
+    points.Start = std::max(0.0, vocalStart - VocalMargin);
+    const double end = vocalEnd + VocalMargin;
     if (Track.Duration <= 0 || end < Track.Duration - 1.0)
         points.End = end;
     return points;
+}
+
+void Queue::ApplySkipPoints(const std::string& Id)
+{
+    std::lock_guard lock(Mutex);
+    if (!bSkipToVocals || Index < 0 || Index >= static_cast<int64_t>(Order.size()) || Order[Index] != Id)
+        return;
+    const PlayerState state = Player::GetState();
+    if (state.FileId != Id)
+        return;
+    const std::optional<File> file = AppData::FindFile(Id);
+    if (!file)
+        return;
+    const SkipPoints points = FindSkipPoints(*file);
+    Player::SetEnd(points.End);
+    if (points.Start > 0 && state.Status == PlayerStatus::Playing && state.Position < points.Start - 1.0) {
+        Logger::Info("[Queue] Vocals found, skipping intro to " + std::to_string(static_cast<int>(points.Start)) + "s");
+        Player::Seek(points.Start);
+    }
 }
 
 void Queue::SetSkipToVocals(bool bOn)

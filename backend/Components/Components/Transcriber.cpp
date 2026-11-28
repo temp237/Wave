@@ -160,9 +160,41 @@ Transcriber::VocalMap Transcriber::FindActivity(const std::vector<float>& Mono)
 	return map;
 }
 
+double Transcriber::SingingFloor(const VocalMap& Map)
+{
+	return std::max(QuietSegmentDb, Map.Reference - QuietBelowReferenceDb);
+}
+
+void Transcriber::FindVocalBounds(const VocalMap& Map, double& Start, double& End)
+{
+	const double floor = SingingFloor(Map);
+	double runStart = -1.0;
+	double runEnd = -1.0;
+	const auto close = [&] {
+		if (runStart >= 0 && runEnd - runStart >= MinVocalRunSeconds) {
+			if (Start < 0)
+				Start = runStart;
+			End = runEnd;
+		}
+	};
+	for (size_t f = 0; f < Map.Levels.size(); f++) {
+		if (Map.Levels[f] < floor)
+			continue;
+		const double start = f * FrameSeconds;
+		if (runStart >= 0 && start - runEnd <= ActivityBridge) {
+			runEnd = start + FrameSeconds;
+			continue;
+		}
+		close();
+		runStart = start;
+		runEnd = start + FrameSeconds;
+	}
+	close();
+}
+
 void Transcriber::DropQuietSegments(std::vector<Word>& Words, const VocalMap& Map)
 {
-	const double floor = std::max(QuietSegmentDb, Map.Reference - QuietBelowReferenceDb);
+	const double floor = SingingFloor(Map);
 	std::vector<Word> kept;
 	kept.reserve(Words.size());
 	size_t first = 0;
@@ -599,13 +631,7 @@ std::optional<Transcriber::Result> Transcriber::Transcribe(const std::vector<flo
 	}
 	Release(state);
 
-	for (const Activity& run : map.Runs) {
-		if (run.End - run.Start < MinVocalRunSeconds)
-			continue;
-		if (result.VocalStart < 0)
-			result.VocalStart = run.Start;
-		result.VocalEnd = run.End;
-	}
+	FindVocalBounds(map, result.VocalStart, result.VocalEnd);
 
 	FixTimings(result.Words, map.Runs);
 	DropQuietSegments(result.Words, map);

@@ -163,10 +163,14 @@ void Player::PublishClock()
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     double last = -1;
     int lastSlot = -1;
+    uint32_t lastTrack = 0;
+    bool bFadeFired = false;
     while (bClockRunning) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (const int done = Crossfade::TakeFinished(); done >= 0 && done != Current && Engines[done])
+        if (const int done = Crossfade::TakeFinished(); done >= 0 && done != Current && Engines[done]) {
             Engines[done]->Pause();
+            Logger::Info("[Player] Crossfade finished");
+        }
         IMFMediaEngine* engine = Active();
         if (engine && Status == PlayerStatus::Playing) {
             const double position = engine->GetCurrentTime();
@@ -175,9 +179,11 @@ void Player::PublishClock()
                 AudioRelay::SetClock(relay, true);
                 if (MicRelay::IsEnabled())
                     MicRelay::SetClock(relay, true);
-                if (Current != lastSlot) {
+                if (Current != lastSlot || TrackChange != lastTrack) {
                     lastSlot = Current;
+                    lastTrack = TrackChange;
                     last = -1;
+                    bFadeFired = false;
                 }
                 const auto crossed = [&](double Point) {
                     return Point > 0 && last >= 0 && last < Point && position >= Point && position - last < 1.0;
@@ -187,8 +193,14 @@ void Player::PublishClock()
                 const double duration = engine->GetDuration();
                 const double stop = end > 0 ? end : (std::isfinite(duration) ? duration : 0);
                 const double fadeAt = fade > 0 && Engines[1] && stop > 2.0 * fade ? stop - fade : 0;
-                if (crossed(fadeAt) && FadeHandler && !Crossfade::IsActive())
+                if (fadeAt > 0 && position < fadeAt)
+                    bFadeFired = false;
+                const double remaining = stop - position;
+                if (fadeAt > 0 && !bFadeFired && position >= fadeAt && remaining >= MinFadeSeconds && FadeHandler && !Crossfade::IsActive()) {
+                    bFadeFired = true;
+                    PendingFade = std::min(fade, remaining);
                     FadeHandler();
+                }
                 else if (crossed(end) && EndedHandler)
                     EndedHandler();
                 last = position;
@@ -229,7 +241,9 @@ bool Player::Play(const std::filesystem::path& Path, const std::string& FileId, 
 
     const int previous = Current;
     const int next = (previous + 1) % EngineCount;
-    const bool bFade = bCrossfade && Engines[next] && FadeSeconds > 0 && Status == PlayerStatus::Playing && !Crossfade::IsActive();
+    const double pending = PendingFade.exchange(0);
+    const double fadeSeconds = pending > 0 ? pending : FadeSeconds.load();
+    const bool bFade = bCrossfade && Engines[next] && fadeSeconds > 0 && Status == PlayerStatus::Playing && !Crossfade::IsActive();
     if (!bFade)
         Isolate();
 
@@ -239,8 +253,9 @@ bool Player::Play(const std::filesystem::path& Path, const std::string& FileId, 
     }
     PendingSeek = std::isfinite(Start) ? std::max(0.0, Start) : 0.0;
     EndAt = 0;
+    TrackChange++;
     if (bFade) {
-        Crossfade::Begin(previous, next, FadeSeconds);
+        Crossfade::Begin(previous, next, fadeSeconds);
         Current = next;
     }
     else {
@@ -283,6 +298,7 @@ bool Player::Cue(const std::filesystem::path& Path, const std::string& FileId, d
     }
     PendingSeek = std::max(0.0, Position);
     EndAt = 0;
+    TrackChange++;
     Status = PlayerStatus::Paused;
     AudioRelay::Discontinuity();
     Normalize::SetTrack(Current, FileId, Path);
@@ -366,6 +382,7 @@ bool Player::Seek(double Seconds)
         Seconds = 0;
     Isolate();
     PendingSeek = 0;
+    TrackChange++;
     AudioRelay::Discontinuity();
     const bool ok = SUCCEEDED(engine->SetCurrentTime(Seconds));
     if (ok && Status == PlayerStatus::Playing)

@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -20,7 +21,7 @@
 class Lyrics
 {
 public:
-	static constexpr int Version = 4;
+	static constexpr int Version = 5;
 
 	Lyrics() = delete;
 
@@ -31,6 +32,7 @@ public:
 	static size_t ClearAll();
 	static bool IsRunning() { return bRunning; }
 	static bool NeedsWork(const std::string& Status, int StoredVersion);
+	static void OnStored(std::function<void(const std::string&)> Handler);
 
 private:
 	using Job = std::pair<std::string, std::filesystem::path>;
@@ -65,4 +67,5 @@ private:
 	static inline std::atomic<bool> bRunning = false;
 	static inline std::atomic<bool> bCancel = false;
 	static inline std::atomic<size_t> Unsaved = 0;
+	static inline std::function<void(const std::string&)> StoredHandler;
 };
