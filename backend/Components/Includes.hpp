@@ -8,6 +8,7 @@
 #include "Components/AppData.hpp"
 #include "Components/Utils.hpp"
 #include "Components/Player.hpp"
+#include "Components/Crossfade.hpp"
 #include "Components/Metadata.hpp"
 #include "Components/TaskQueue.hpp"
 #include "Components/Queue.hpp"
@@ -20,4 +21,5 @@
 #include "Components/Normalize.hpp"
 #include "Components/Lyrics.hpp"
 #include "Components/Visualizer.hpp"
+#include "Components/OnlineDownloader.hpp"
 #include "../Discord/DiscordPresence.hpp"

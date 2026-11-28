@@ -17,6 +17,8 @@ void Queue::Init()
         const nlohmann::json playback = Settings::Get("playback");
         bShuffle = Settings::Bool(playback, "shuffle", false);
         Repeat = ParseRepeat(Settings::String(playback, "repeat", "off"));
+        bSkipToVocals = Settings::Bool(playback, "skipToVocals", false);
+        Player::SetCrossfade(Settings::Number(playback, "crossfade", 0.0));
 
         CachedQueue cached = AppData::GetCachedQueue();
         Order = std::move(cached.Order);
@@ -25,14 +27,19 @@ void Queue::Init()
         Queued = cached.Queued;
         Source = std::move(cached.Source);
         if (Index >= 0) {
-            if (std::optional<File> file = AppData::FindFile(Order[Index]))
+            if (std::optional<File> file = AppData::FindFile(Order[Index])) {
                 Player::Cue(file->Path, Order[Index], cached.Position);
+                Player::SetEnd(FindSkipPoints(*file).End);
+            }
             Logger::Info("[Queue] Restored " + std::to_string(Order.size()) + " queued tracks");
         }
     }
     Worker.Start();
     Player::OnEnded([] {
         Worker.Post([] { Next(true); });
+    });
+    Player::OnFadePoint([] {
+        Worker.Post([] { CrossfadeNext(); });
     });
 }
 
@@ -43,6 +50,7 @@ void Queue::Shutdown()
         Persist(true);
     }
     Player::OnEnded({});
+    Player::OnFadePoint({});
     Worker.Stop();
     ChangedHandler = {};
 }
@@ -60,7 +68,7 @@ void Queue::ClampQueued()
     Queued = std::clamp<int64_t>(Queued, 0, std::max<int64_t>(room, 0));
 }
 
-bool Queue::PlayCurrent()
+bool Queue::PlayCurrent(bool bCrossfade)
 {
     if (Index < 0 || Index >= static_cast<int64_t>(Order.size()))
         return false;
@@ -70,7 +78,33 @@ bool Queue::PlayCurrent()
         Logger::Error("[Queue] Track " + id.substr(0, 12) + "... isn't in the library");
         return false;
     }
-    return Player::Play(file->Path, id);
+    const SkipPoints points = FindSkipPoints(*file);
+    const bool ok = Player::Play(file->Path, id, points.Start, bCrossfade);
+    if (ok)
+        Player::SetEnd(points.End);
+    return ok;
+}
+
+Queue::SkipPoints Queue::FindSkipPoints(const File& Track)
+{
+    SkipPoints points;
+    if (!bSkipToVocals || Track.VocalStart < 0 || Track.VocalEnd <= Track.VocalStart)
+        return points;
+    points.Start = std::max(0.0, Track.VocalStart - VocalMargin);
+    const double end = Track.VocalEnd + VocalMargin;
+    if (Track.Duration <= 0 || end < Track.Duration - 1.0)
+        points.End = end;
+    return points;
+}
+
+void Queue::SetSkipToVocals(bool bOn)
+{
+    std::lock_guard lock(Mutex);
+    bSkipToVocals = bOn;
+    std::optional<File> file;
+    if (Index >= 0 && Index < static_cast<int64_t>(Order.size()))
+        file = AppData::FindFile(Order[Index]);
+    Player::SetEnd(file ? FindSkipPoints(*file).End : 0.0);
 }
 
 bool Queue::Set(const std::vector<std::string>& Ids, size_t Start, const std::string& Source)
@@ -102,14 +136,28 @@ bool Queue::Set(const std::vector<std::string>& Ids, size_t Start, const std::st
     return ok;
 }
 
-bool Queue::Next(bool bAuto)
+void Queue::CrossfadeNext()
+{
+    std::lock_guard lock(Mutex);
+    if (Index < 0 || Index >= static_cast<int64_t>(Order.size()) || Player::GetState().FileId != Order[Index])
+        return;
+    if (Repeat == RepeatMode::One || (Index + 1 >= static_cast<int64_t>(Order.size()) && Repeat != RepeatMode::All))
+        return;
+    Next(true, true);
+}
+
+bool Queue::Next(bool bAuto, bool bCrossfade)
 {
     std::lock_guard lock(Mutex);
     if (Order.empty())
         return false;
 
+    if (bAuto && (Index < 0 || Index >= static_cast<int64_t>(Order.size()) || Player::GetState().FileId != Order[Index]))
+        return false;
+
     if (bAuto && Repeat == RepeatMode::One) {
-        Player::Seek(0);
+        std::optional<File> file = AppData::FindFile(Order[Index]);
+        Player::Seek(file ? FindSkipPoints(*file).Start : 0.0);
         return Player::Resume();
     }
 
@@ -128,6 +176,8 @@ bool Queue::Next(bool bAuto)
     int64_t next = Index + 1;
     if (next >= static_cast<int64_t>(Order.size())) {
         if (Repeat != RepeatMode::All && bAuto) {
+            if (Player::GetState().Status == PlayerStatus::Playing)
+                Player::Pause();
             Broadcast();
             return false;
         }
@@ -143,7 +193,7 @@ bool Queue::Next(bool bAuto)
     if (next == Index + 1 && Queued > 0)
         Queued--;
     Index = next;
-    const bool ok = PlayCurrent();
+    const bool ok = PlayCurrent(bCrossfade);
     Broadcast();
     return ok;
 }

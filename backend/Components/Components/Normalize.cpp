@@ -30,8 +30,8 @@ void Normalize::Processor::Process(float* Data, size_t Frames, uint32_t Channels
 		Rate = SampleRate;
 		Coefficient = static_cast<float>(1.0 - std::exp(-1.0 / (SampleRate * 0.15)));
 	}
-	const float target = Normalize::Target.load();
-	const uint32_t track = Normalize::TrackChange.load();
+	const float target = Normalize::Targets[Slot].load();
+	const uint32_t track = Normalize::TrackChanges[Slot].load();
 	if (track != SeenTrack) {
 		SeenTrack = track;
 		Gain = target;
@@ -177,18 +177,20 @@ double Normalize::GainDb(const Loudness& Value)
 
 void Normalize::ApplyCurrent()
 {
-	float target = 1.f;
-	if (bEnabled) {
-		if (auto it = Cache.find(CurrentId); it != Cache.end())
-			target = static_cast<float>(std::pow(10.0, GainDb(it->second) / 20.0));
+	for (int slot = 0; slot < SlotCount; slot++) {
+		float target = 1.f;
+		if (bEnabled) {
+			if (auto it = Cache.find(CurrentIds[slot]); it != Cache.end())
+				target = static_cast<float>(std::pow(10.0, GainDb(it->second) / 20.0));
+		}
+		Targets[slot] = target;
 	}
-	Target = target;
 }
 
-void Normalize::SetTrack(const std::string& Id, const std::filesystem::path& Path)
+void Normalize::SetTrack(int Slot, const std::string& Id, const std::filesystem::path& Path)
 {
 	std::lock_guard lock(Mutex);
-	CurrentId = Id;
+	CurrentIds[Slot] = Id;
 	if (bEnabled && !Cache.contains(Id)) {
 		if (auto it = std::find_if(Pending.begin(), Pending.end(), [&](const auto& job) { return job.first == Id; }); it != Pending.end())
 			Pending.erase(it);
@@ -197,7 +199,7 @@ void Normalize::SetTrack(const std::string& Id, const std::filesystem::path& Pat
 		Wake.notify_one();
 	}
 	ApplyCurrent();
-	TrackChange++;
+	TrackChanges[Slot]++;
 }
 
 void Normalize::Store(const std::string& Id, const Loudness& Value)
@@ -205,7 +207,7 @@ void Normalize::Store(const std::string& Id, const Loudness& Value)
 	std::lock_guard lock(Mutex);
 	Cache[Id] = Value;
 	Queued.erase(Id);
-	if (Id == CurrentId)
+	if (std::find(CurrentIds.begin(), CurrentIds.end(), Id) != CurrentIds.end())
 		ApplyCurrent();
 	if (++Unsaved >= 25 || Pending.empty())
 		SaveCache();

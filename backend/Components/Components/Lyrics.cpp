@@ -102,7 +102,7 @@ void Lyrics::Prioritize(const std::string& Id, const std::filesystem::path& Path
 	if (!bRunning)
 		return;
 	const std::optional<File> file = AppData::FindFile(Id);
-	if (file && !NeedsWork(file->LyricsStatus, file->LyricsVersion))
+	if (!file || !NeedsWork(file->LyricsStatus, file->LyricsVersion))
 		return;
 	std::lock_guard lock(Mutex);
 	if (auto it = std::find_if(Pending.begin(), Pending.end(), [&](const Job& job) { return job.first == Id; }); it != Pending.end())
@@ -179,9 +179,9 @@ void Lyrics::Work()
 	}
 }
 
-void Lyrics::Store(const std::string& Id, std::vector<LyricLine> Lines, const std::string& Status)
+void Lyrics::Store(const std::string& Id, std::vector<LyricLine> Lines, const std::string& Status, double VocalStart, double VocalEnd)
 {
-	AppData::SetLyrics(Id, std::move(Lines), Status, Version);
+	AppData::SetLyrics(Id, std::move(Lines), Status, Version, VocalStart, VocalEnd);
 	Unsaved++;
 }
 
@@ -198,6 +198,14 @@ void Lyrics::Process(const std::string& Id, const std::filesystem::path& Path)
 	}
 
 	const auto started = std::chrono::steady_clock::now();
+	auto mark = started;
+	std::ostringstream stages;
+	stages << std::fixed << std::setprecision(1);
+	const auto lap = [&](const char* Stage) {
+		const auto now = std::chrono::steady_clock::now();
+		stages << (stages.tellp() > 0 ? ", " : "") << Stage << " " << std::chrono::duration<double>(now - mark).count() << " s";
+		mark = now;
+	};
 	std::string error;
 	const auto fail = [&](const std::string& Stage) {
 		if (bCancel)
@@ -210,31 +218,39 @@ void Lyrics::Process(const std::string& Id, const std::filesystem::path& Path)
 	std::optional<std::vector<float>> mix = AudioLoader::Load(Path, NormalizeFilters, error, &bCancel);
 	if (!mix)
 		return fail("Loading");
+	lap("load");
 	std::vector<float> vocals = Separation->Vocals(*mix, error, &bCancel);
 	mix.reset();
 	if (vocals.empty())
 		return fail("Vocal separation");
+	lap("separate");
 	const std::vector<float> mono = AudioLoader::Resample(vocals, Separator::SampleRate, 2, Transcriber::SampleRate, 1);
 	vocals.clear();
 	if (mono.empty()) {
 		error = "resampling produced no audio";
 		return fail("Resampling");
 	}
-	const std::optional<Transcriber::Result> result = Transcription->Transcribe(mono, error, &bCancel);
+	std::optional<Transcriber::Result> result;
+	{
+		std::lock_guard lock(TranscribeLock);
+		lap("wait");
+		result = Transcription->Transcribe(mono, error, &bCancel);
+	}
 	if (!result)
 		return fail("Transcription");
+	lap("transcribe");
 
 	std::vector<LyricLine> stored;
 	stored.reserve(result->Lines.size());
 	for (const Transcriber::Line& line : result->Lines)
 		stored.push_back({ std::round(line.Start * 100.0) / 100.0, std::round(line.End * 100.0) / 100.0, line.Text });
 	const size_t count = stored.size();
-	Store(Id, std::move(stored), count ? "done" : "none");
+	Store(Id, std::move(stored), count ? "done" : "none", result->VocalStart, result->VocalEnd);
 
 	const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 	std::ostringstream took;
 	took << std::fixed << std::setprecision(1) << seconds;
-	Logger::Info("[Lyrics] " + name + ": " + (count ? std::to_string(count) + " lines" : std::string("no vocals")) + " in " + took.str() + " s");
+	Logger::Info("[Lyrics] " + name + ": " + (count ? std::to_string(count) + " lines" : std::string("no vocals")) + " in " + took.str() + " s (" + stages.str() + ")");
 }
 
 void Lyrics::Save(bool bForce)

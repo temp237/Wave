@@ -800,3 +800,84 @@ input[type="range"]:disabled { cursor: default; opacity: .5; }
   .np-line.active { transform: none; }
   .np-lyrics.synced .np-line:not(.active) { filter: none; }
 }
+
+
+/* ============ Downloader ============ */
+.main.downloader-view .lib-only, .main.downloader-view #trackSection { display: none; }
+.main:not(.downloader-view) #dlSection { display: none; }
+.main.downloader-view .toolbar { min-height: 76px; }
+.main.downloader-view .toolbar .spacer { display: none; }
+.main.downloader-view .search { flex: 1; width: auto; max-width: 560px; }
+
+.dl-head, .dl-row { grid-template-columns: 40px minmax(0, 1fr) 72px 72px 56px 124px; }
+.app.queue-open .dl-head, .app.queue-open .dl-row { grid-template-columns: 32px minmax(0, 1fr) 60px 60px 48px 116px; }
+.c-stat { display: flex; justify-content: flex-end; }
+
+.dl-row {
+  display: grid; align-items: center; gap: 12px;
+  height: 54px; padding: 0 8px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 54px;
+}
+.dl-row:hover { background: var(--hover); }
+.dl-row:hover .t-artist { color: var(--text); }
+.dl-row .num { font-size: 14px; }
+.dl-row.is-done .t-title { color: var(--accent); }
+.dl-row .art { position: relative; }
+.dl-row .art img { position: absolute; inset: 0; }
+.dl-row .t-artist.dl-err, .dl-row:hover .t-artist.dl-err { color: var(--danger); }
+
+.col-stat {
+  display: flex; align-items: center; justify-content: flex-end; gap: 5px;
+  font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.col-stat .i { width: 14px; height: 14px; color: var(--faint); }
+.dl-row:hover .col-stat { color: var(--text); }
+.col-dl { display: flex; justify-content: flex-end; }
+
+.dl-btn { width: 116px; justify-content: center; position: relative; overflow: hidden; isolation: isolate; }
+.dl-btn.busy { cursor: default; color: var(--accent-hi); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.dl-btn.busy:hover { background: none; }
+.dl-btn.busy::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; z-index: -1;
+  width: var(--p, 0%);
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  transition: width .25s ease;
+}
+.dl-label { font-variant-numeric: tabular-nums; }
+.dl-btn.done { color: var(--accent); border-color: transparent; background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.dl-btn.done:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: transparent; }
+.dl-btn.done.fresh .i { animation: dl-pop .4s ease; }
+.dl-btn.failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.dl-btn.failed:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: var(--danger); }
+
+.spinner {
+  width: 14px; height: 14px; flex: none;
+  border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent;
+  animation: spin .8s linear infinite;
+}
+.empty-icon .spinner { width: 28px; height: 28px; border-width: 3px; color: var(--accent); }
+.empty.error .empty-icon { color: var(--danger); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes dl-pop { 0% { transform: scale(.4); opacity: 0; } 70% { transform: scale(1.2); } 100% { transform: scale(1); } }
+
+.dl-play {
+  position: absolute; inset: 0; z-index: 1;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, .55); color: #fff;
+  opacity: 0; transition: opacity .12s;
+}
+.dl-play .i { width: 18px; height: 18px; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .5)); transition: transform .12s; }
+.dl-play:hover .i { transform: scale(1.1); }
+.dl-play .spinner { width: 16px; height: 16px; color: #fff; }
+.dl-row:hover .dl-play, .dl-play:focus-visible, .dl-play.live, .dl-play.loading { opacity: 1; }
+.dl-row.previewing .t-title { color: var(--accent); }
+
+/* ============ Playlist cover mosaic ============ */
+.view-cover { position: relative; overflow: hidden; }
+.cover-mosaic { position: absolute; inset: 0; display: grid; background: var(--elev); }
+.cover-mosaic.grid { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.cover-mosaic img { width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: cover; display: block; }

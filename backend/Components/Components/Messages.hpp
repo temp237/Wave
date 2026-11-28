@@ -55,6 +55,12 @@ enum class MessageType : uint8_t {
 	Spectrum = 46,
 	GetArtwork = 47,
 	ClearLyrics = 48,
+	DownloaderSearch = 49,
+	DownloaderDownload = 50,
+	DownloadProgress = 51,
+	PreviewTrack = 52,
+	SetSkipToVocals = 53,
+	SetCrossfade = 54,
 };
 
 // Index = wire tag. Order must match the Value enum in frontend lib.rs.

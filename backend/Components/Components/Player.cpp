@@ -19,6 +19,7 @@
 #include "Logger.hpp"
 #include "Utils.hpp"
 #include "Equalizer.hpp"
+#include "Crossfade.hpp"
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfreadwrite.lib")
@@ -30,8 +31,11 @@ class Player::Notify : public IMFMediaEngineNotify
 {
 private:
     std::atomic<ULONG> RefCount = 1;
+    int Slot = 0;
 
 public:
+    explicit Notify(int Slot) : Slot(Slot) {}
+
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
     {
         if (!ppv)
@@ -57,10 +61,39 @@ public:
 
     STDMETHODIMP EventNotify(DWORD Event, DWORD_PTR, DWORD) override
     {
-        Player::HandleEvent(Event);
+        Player::HandleEvent(Slot, Event);
         return S_OK;
     }
 };
+
+bool Player::CreateEngine(IMFMediaEngineClassFactory* Factory, int Slot)
+{
+    IMFAttributes* attributes = nullptr;
+    MFCreateAttributes(&attributes, 2);
+    Callbacks[Slot] = new Notify(Slot);
+    attributes->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, Callbacks[Slot]);
+    attributes->SetUINT32(MF_MEDIA_ENGINE_AUDIO_CATEGORY, AudioCategory_Media);
+
+    IMFMediaEngine* engine = nullptr;
+    const HRESULT hr = Factory->CreateInstance(MF_MEDIA_ENGINE_AUDIOONLY, attributes, &engine);
+    attributes->Release();
+    if (FAILED(hr)) {
+        Logger::Error("[Player] Couldn't create media engine " + std::to_string(Slot) + " (" + std::to_string(hr) + ")");
+        return false;
+    }
+
+    IMFMediaEngineEx* engineEx = nullptr;
+    if (SUCCEEDED(engine->QueryInterface(IID_PPV_ARGS(&engineEx)))) {
+        IUnknown* effect = Equalizer::CreateEffect(Slot);
+        const HRESULT effectHr = engineEx->InsertAudioEffect(effect, TRUE);
+        effect->Release();
+        engineEx->Release();
+        if (FAILED(effectHr))
+            Logger::Warning("[Player] Couldn't add the equalizer (" + std::to_string(effectHr) + ")");
+    }
+    Engines[Slot] = engine;
+    return true;
+}
 
 bool Player::Init()
 {
@@ -82,31 +115,15 @@ bool Player::Init()
         return false;
     }
 
-    IMFAttributes* attributes = nullptr;
-    MFCreateAttributes(&attributes, 2);
-    Callback = new Notify();
-    attributes->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, Callback);
-    attributes->SetUINT32(MF_MEDIA_ENGINE_AUDIO_CATEGORY, AudioCategory_Media);
-
-    hr = factory->CreateInstance(MF_MEDIA_ENGINE_AUDIOONLY, attributes, &Engine);
-    attributes->Release();
+    const bool ok = CreateEngine(factory, 0);
+    if (ok && !CreateEngine(factory, 1))
+        Logger::Warning("[Player] Crossfade is unavailable without a second media engine");
     factory->Release();
-    if (FAILED(hr)) {
-        Logger::Error("[Player] Couldn't create the media engine (" + std::to_string(hr) + ")");
-        Engine = nullptr;
+    if (!ok)
         return false;
-    }
 
-    IMFMediaEngineEx* engineEx = nullptr;
-    if (SUCCEEDED(Engine->QueryInterface(IID_PPV_ARGS(&engineEx)))) {
-        IUnknown* effect = Equalizer::CreateEffect();
-        const HRESULT effectHr = engineEx->InsertAudioEffect(effect, TRUE);
-        effect->Release();
-        engineEx->Release();
-        if (FAILED(effectHr))
-            Logger::Warning("[Player] Couldn't add the equalizer (" + std::to_string(effectHr) + ")");
-    }
-
+    Current = 0;
+    Crossfade::Reset(0);
     bClockRunning = true;
     ClockThread = std::thread(PublishClock);
 
@@ -114,18 +131,71 @@ bool Player::Init()
     return true;
 }
 
+IMFMediaEngine* Player::Active()
+{
+    return Engines[Current];
+}
+
+double Player::RelayPosition()
+{
+    const int writer = Crossfade::Writer();
+    IMFMediaEngine* engine = Engines[writer];
+    double position = engine ? engine->GetCurrentTime() : 0;
+    if (!std::isfinite(position))
+        position = 0;
+    if (position <= 0 && writer == Current && PendingSeek > 0)
+        position = PendingSeek;
+    return position + Crossfade::OffsetSeconds();
+}
+
+void Player::Isolate()
+{
+    const int active = Current;
+    for (int slot = 0; slot < EngineCount; slot++) {
+        if (slot != active && Engines[slot])
+            Engines[slot]->Pause();
+    }
+    Crossfade::Reset(active);
+}
+
 void Player::PublishClock()
 {
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    double last = -1;
+    int lastSlot = -1;
     while (bClockRunning) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (Engine && Status == PlayerStatus::Playing) {
-            const double position = Engine->GetCurrentTime();
+        if (const int done = Crossfade::TakeFinished(); done >= 0 && done != Current && Engines[done])
+            Engines[done]->Pause();
+        IMFMediaEngine* engine = Active();
+        if (engine && Status == PlayerStatus::Playing) {
+            const double position = engine->GetCurrentTime();
             if (std::isfinite(position)) {
-                AudioRelay::SetClock(position, true);
+                const double relay = RelayPosition();
+                AudioRelay::SetClock(relay, true);
                 if (MicRelay::IsEnabled())
-                    MicRelay::SetClock(position, true);
+                    MicRelay::SetClock(relay, true);
+                if (Current != lastSlot) {
+                    lastSlot = Current;
+                    last = -1;
+                }
+                const auto crossed = [&](double Point) {
+                    return Point > 0 && last >= 0 && last < Point && position >= Point && position - last < 1.0;
+                };
+                const double end = EndAt;
+                const double fade = FadeSeconds;
+                const double duration = engine->GetDuration();
+                const double stop = end > 0 ? end : (std::isfinite(duration) ? duration : 0);
+                const double fadeAt = fade > 0 && Engines[1] && stop > 2.0 * fade ? stop - fade : 0;
+                if (crossed(fadeAt) && FadeHandler && !Crossfade::IsActive())
+                    FadeHandler();
+                else if (crossed(end) && EndedHandler)
+                    EndedHandler();
+                last = position;
             }
+        }
+        else {
+            last = -1;
         }
     }
     if (SUCCEEDED(com))
@@ -137,72 +207,92 @@ void Player::Shutdown()
     bClockRunning = false;
     if (ClockThread.joinable())
         ClockThread.join();
-    if (Engine) {
-        Engine->Shutdown();
-        Engine->Release();
-        Engine = nullptr;
-    }
-    if (Callback) {
-        Callback->Release();
-        Callback = nullptr;
+    for (int slot = 0; slot < EngineCount; slot++) {
+        if (Engines[slot]) {
+            Engines[slot]->Shutdown();
+            Engines[slot]->Release();
+            Engines[slot] = nullptr;
+        }
+        if (Callbacks[slot]) {
+            Callbacks[slot]->Release();
+            Callbacks[slot] = nullptr;
+        }
     }
     MFShutdown();
     CoUninitialize();
 }
 
-bool Player::Play(const std::filesystem::path& Path, const std::string& FileId)
+bool Player::Play(const std::filesystem::path& Path, const std::string& FileId, double Start, bool bCrossfade)
 {
-    if (!Engine)
+    if (!Active())
         return false;
+
+    const int previous = Current;
+    const int next = (previous + 1) % EngineCount;
+    const bool bFade = bCrossfade && Engines[next] && FadeSeconds > 0 && Status == PlayerStatus::Playing && !Crossfade::IsActive();
+    if (!bFade)
+        Isolate();
 
     {
         std::lock_guard lock(FileIdMutex);
         CurrentFileId = FileId;
     }
-    PendingSeek = 0;
-    Status = PlayerStatus::Loading;
-    AudioRelay::Discontinuity();
-    Normalize::SetTrack(FileId, Path);
+    PendingSeek = std::isfinite(Start) ? std::max(0.0, Start) : 0.0;
+    EndAt = 0;
+    if (bFade) {
+        Crossfade::Begin(previous, next, FadeSeconds);
+        Current = next;
+    }
+    else {
+        Status = PlayerStatus::Loading;
+        AudioRelay::Discontinuity();
+    }
+    IMFMediaEngine* engine = Active();
+    Normalize::SetTrack(Current, FileId, Path);
     Lyrics::Prioritize(FileId, Path);
 
     BSTR source = SysAllocString(Path.c_str());
-    HRESULT hr = Engine->SetSource(source);
+    HRESULT hr = engine->SetSource(source);
     SysFreeString(source);
     if (SUCCEEDED(hr))
-        hr = Engine->Play();
+        hr = engine->Play();
 
     if (FAILED(hr)) {
         Logger::Error("[Player] Couldn't play " + Utils::ToUtf8(Path.filename()) + " (" + std::to_string(hr) + ")");
+        Isolate();
         Status = PlayerStatus::Error;
         Broadcast();
         return false;
     }
 
-    Logger::Info("[Player] Playing " + Utils::ToUtf8(Path.filename()));
+    Logger::Info(std::string(bFade ? "[Player] Crossfading into " : "[Player] Playing ") + Utils::ToUtf8(Path.filename()));
     Broadcast();
     return true;
 }
 
 bool Player::Cue(const std::filesystem::path& Path, const std::string& FileId, double Position)
 {
-    if (!Engine)
+    IMFMediaEngine* engine = Active();
+    if (!engine)
         return false;
+    Isolate();
 
     {
         std::lock_guard lock(FileIdMutex);
         CurrentFileId = FileId;
     }
     PendingSeek = std::max(0.0, Position);
+    EndAt = 0;
     Status = PlayerStatus::Paused;
     AudioRelay::Discontinuity();
-    Normalize::SetTrack(FileId, Path);
+    Normalize::SetTrack(Current, FileId, Path);
     Lyrics::Prioritize(FileId, Path);
 
     BSTR source = SysAllocString(Path.c_str());
-    HRESULT hr = Engine->SetSource(source);
+    HRESULT hr = engine->SetSource(source);
     SysFreeString(source);
     if (SUCCEEDED(hr))
-        hr = Engine->Load();
+        hr = engine->Load();
 
     if (FAILED(hr)) {
         Logger::Error("[Player] Couldn't load " + Utils::ToUtf8(Path.filename()) + " (" + std::to_string(hr) + ")");
@@ -223,57 +313,90 @@ bool Player::Cue(const std::filesystem::path& Path, const std::string& FileId, d
 
 bool Player::Pause()
 {
-    if (!Engine || Status == PlayerStatus::Stopped)
+    IMFMediaEngine* engine = Active();
+    if (!engine || Status == PlayerStatus::Stopped)
         return false;
-    return SUCCEEDED(Engine->Pause());
+    if (Crossfade::IsActive()) {
+        for (int slot = 0; slot < EngineCount; slot++) {
+            if (slot != Current && Engines[slot])
+                Engines[slot]->Pause();
+        }
+    }
+    return SUCCEEDED(engine->Pause());
 }
 
 bool Player::Resume()
 {
-    if (!Engine || Status == PlayerStatus::Stopped || Status == PlayerStatus::Error)
+    IMFMediaEngine* engine = Active();
+    if (!engine || Status == PlayerStatus::Stopped || Status == PlayerStatus::Error)
         return false;
-    return SUCCEEDED(Engine->Play());
+    if (Crossfade::IsActive()) {
+        for (int slot = 0; slot < EngineCount; slot++) {
+            if (slot != Current && Engines[slot])
+                Engines[slot]->Play();
+        }
+    }
+    return SUCCEEDED(engine->Play());
 }
 
 bool Player::Stop()
 {
-    if (!Engine)
+    IMFMediaEngine* engine = Active();
+    if (!engine)
         return false;
+    Isolate();
     Status = PlayerStatus::Stopped;
     {
         std::lock_guard lock(FileIdMutex);
         CurrentFileId.clear();
     }
-    Engine->Pause();
+    engine->Pause();
     AudioRelay::Discontinuity();
-    Engine->SetCurrentTime(0);
+    engine->SetCurrentTime(0);
     Broadcast();
     return true;
 }
 
 bool Player::Seek(double Seconds)
 {
-    if (!Engine || Status == PlayerStatus::Stopped)
+    IMFMediaEngine* engine = Active();
+    if (!engine || Status == PlayerStatus::Stopped)
         return false;
     if (!std::isfinite(Seconds) || Seconds < 0)
         Seconds = 0;
+    Isolate();
     PendingSeek = 0;
     AudioRelay::Discontinuity();
-    const bool ok = SUCCEEDED(Engine->SetCurrentTime(Seconds));
+    const bool ok = SUCCEEDED(engine->SetCurrentTime(Seconds));
     if (ok && Status == PlayerStatus::Playing)
         AudioRelay::MarkStart(Seconds);
     return ok;
 }
 
+void Player::SetEnd(double Seconds)
+{
+    EndAt = std::isfinite(Seconds) && Seconds > 0 ? Seconds : 0.0;
+}
+
+void Player::SetCrossfade(double Seconds)
+{
+    FadeSeconds = std::isfinite(Seconds) ? std::clamp(Seconds, 0.0, Crossfade::MaxSeconds) : 0.0;
+}
+
 bool Player::SetVolume(double Volume)
 {
-    if (!Engine)
+    if (!Active())
         return false;
     if (!std::isfinite(Volume))
         Volume = 1;
     MicRelay::SetGain(Volume);
     AudioRelay::SetVolume(Volume);
-    return SUCCEEDED(Engine->SetVolume(std::clamp(Volume, 0.0, 1.0)));
+    bool ok = true;
+    for (IMFMediaEngine* engine : Engines) {
+        if (engine)
+            ok = SUCCEEDED(engine->SetVolume(std::clamp(Volume, 0.0, 1.0))) && ok;
+    }
+    return ok;
 }
 
 PlayerState Player::GetState()
@@ -283,9 +406,10 @@ PlayerState Player::GetState()
         std::lock_guard lock(FileIdMutex);
         state.FileId = CurrentFileId;
     }
-    if (Engine && state.Status != PlayerStatus::Stopped) {
-        const double position = Engine->GetCurrentTime();
-        const double duration = Engine->GetDuration();
+    IMFMediaEngine* engine = Active();
+    if (engine && state.Status != PlayerStatus::Stopped) {
+        const double position = engine->GetCurrentTime();
+        const double duration = engine->GetDuration();
         state.Position = std::isfinite(position) ? position : 0;
         if (state.Position <= 0 && PendingSeek > 0)
             state.Position = PendingSeek;
@@ -304,8 +428,19 @@ void Player::OnEnded(std::function<void()> Handler)
     EndedHandler = std::move(Handler);
 }
 
-void Player::HandleEvent(unsigned long Event)
+void Player::OnFadePoint(std::function<void()> Handler)
 {
+    FadeHandler = std::move(Handler);
+}
+
+void Player::HandleEvent(int Slot, unsigned long Event)
+{
+    if (Slot != Current) {
+        if (Event == MF_MEDIA_ENGINE_EVENT_ENDED || Event == MF_MEDIA_ENGINE_EVENT_ERROR)
+            Crossfade::OutgoingEnded();
+        return;
+    }
+    IMFMediaEngine* engine = Engines[Slot];
     const PlayerStatus current = Status;
     switch (Event) {
     case MF_MEDIA_ENGINE_EVENT_PLAYING:
@@ -326,7 +461,7 @@ void Player::HandleEvent(unsigned long Event)
         Status = PlayerStatus::Error;
         USHORT code = 0;
         IMFMediaError* error = nullptr;
-        if (Engine && SUCCEEDED(Engine->GetError(&error)) && error) {
+        if (engine && SUCCEEDED(engine->GetError(&error)) && error) {
             code = error->GetErrorCode();
             error->Release();
         }
@@ -338,9 +473,10 @@ void Player::HandleEvent(unsigned long Event)
         break;
     case MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA: {
         const double seek = PendingSeek.exchange(0);
-        if (seek > 0 && Engine) {
-            AudioRelay::Discontinuity();
-            Engine->SetCurrentTime(seek);
+        if (seek > 0 && engine) {
+            if (!Crossfade::IsActive())
+                AudioRelay::Discontinuity();
+            engine->SetCurrentTime(seek);
         }
         break;
     }
@@ -357,13 +493,14 @@ void Player::HandleEvent(unsigned long Event)
 void Player::Broadcast()
 {
     const PlayerState state = GetState();
+    const double relay = RelayPosition();
     const bool playing = state.Status == PlayerStatus::Playing;
-    if (playing && !bWasPlaying.exchange(true))
-        AudioRelay::MarkStart(state.Position);
+    if (playing && !bWasPlaying.exchange(true) && !Crossfade::IsActive())
+        AudioRelay::MarkStart(relay);
     else if (!playing)
         bWasPlaying = false;
-    MicRelay::SetClock(state.Position, playing);
-    AudioRelay::SetClock(state.Position, playing);
+    MicRelay::SetClock(relay, playing);
+    AudioRelay::SetClock(relay, playing);
     if (StateHandler)
         StateHandler(state);
 }

@@ -123,7 +123,7 @@
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>cryptopp.lib;whisper.lib;ggml.lib;ggml-cpu.lib;ggml-vulkan.lib;ggml-base.lib;vulkan-1.lib;onnxruntime.lib;avfilter.lib;avformat.lib;avcodec.lib;swresample.lib;swscale.lib;avutil.lib;user32.lib;bcrypt.lib;mfuuid.lib;ole32.lib;strmiids.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libcurl-d.lib;zlibd.lib;ws2_32.lib;crypt32.lib;secur32.lib;iphlpapi.lib;advapi32.lib;cryptopp.lib;whisper.lib;ggml.lib;ggml-cpu.lib;ggml-vulkan.lib;ggml-base.lib;vulkan-1.lib;onnxruntime.lib;avfilter.lib;avformat.lib;avcodec.lib;swresample.lib;swscale.lib;avutil.lib;user32.lib;bcrypt.lib;mfuuid.lib;ole32.lib;strmiids.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(MSBuildProjectDirectory)\..\Dependencies\onnxruntime-directml\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <Manifest>
@@ -147,7 +147,7 @@
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>cryptopp.lib;whisper.lib;ggml.lib;ggml-cpu.lib;ggml-vulkan.lib;ggml-base.lib;vulkan-1.lib;onnxruntime.lib;avfilter.lib;avformat.lib;avcodec.lib;swresample.lib;swscale.lib;avutil.lib;user32.lib;bcrypt.lib;mfuuid.lib;ole32.lib;strmiids.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>libcurl.lib;zlib.lib;ws2_32.lib;crypt32.lib;secur32.lib;iphlpapi.lib;advapi32.lib;cryptopp.lib;whisper.lib;ggml.lib;ggml-cpu.lib;ggml-vulkan.lib;ggml-base.lib;vulkan-1.lib;onnxruntime.lib;avfilter.lib;avformat.lib;avcodec.lib;swresample.lib;swscale.lib;avutil.lib;user32.lib;bcrypt.lib;mfuuid.lib;ole32.lib;strmiids.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(MSBuildProjectDirectory)\..\Dependencies\onnxruntime-directml\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <Manifest>
@@ -162,6 +162,7 @@
     <ClCompile Include="Components\Components\Metadata.cpp" />
     <ClCompile Include="Components\Components\TaskQueue.cpp" />
     <ClCompile Include="Components\Components\Queue.cpp" />
+    <ClCompile Include="Components\Components\Crossfade.cpp" />
     <ClCompile Include="Components\Components\Equalizer.cpp" />
     <ClCompile Include="Components\Components\Settings.cpp" />
     <ClCompile Include="Components\Components\Startup.cpp" />
@@ -175,6 +176,7 @@
     <ClCompile Include="Components\Components\Lyrics.cpp" />
     <ClCompile Include="Components\Components\ModelStore.cpp" />
     <ClCompile Include="Components\Components\Visualizer.cpp" />
+    <ClCompile Include="Components\Components\OnlineDownloader.cpp" />
     <ClCompile Include="Discord\DiscordIPC.cpp" />
     <ClCompile Include="Discord\DiscordPresence.cpp" />
     <ClCompile Include="Components\Components\Logger.cpp" />
@@ -187,6 +189,7 @@
     <ClInclude Include="Components\Components\Encryption.hpp" />
     <ClInclude Include="Components\Components\Utils.hpp" />
     <ClInclude Include="Components\Components\Player.hpp" />
+    <ClInclude Include="Components\Components\Crossfade.hpp" />
     <ClInclude Include="Components\Components\Metadata.hpp" />
     <ClInclude Include="Components\Components\TaskQueue.hpp" />
     <ClInclude Include="Components\Components\Queue.hpp" />
@@ -203,6 +206,7 @@
     <ClInclude Include="Components\Components\Lyrics.hpp" />
     <ClInclude Include="Components\Components\ModelStore.hpp" />
     <ClInclude Include="Components\Components\Visualizer.hpp" />
+    <ClInclude Include="Components\Components\OnlineDownloader.hpp" />
     <ClInclude Include="Discord\DiscordIPC.hpp" />
     <ClInclude Include="Discord\DiscordPresence.hpp" />
     <ClInclude Include="Components\Components\Logger.hpp" />

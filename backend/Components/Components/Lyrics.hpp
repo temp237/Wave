@@ -20,7 +20,7 @@
 class Lyrics
 {
 public:
-	static constexpr int Version = 2;
+	static constexpr int Version = 4;
 
 	Lyrics() = delete;
 
@@ -49,12 +49,13 @@ private:
 	static std::optional<Job> NextJob();
 	static void Work();
 	static void Process(const std::string& Id, const std::filesystem::path& Path);
-	static void Store(const std::string& Id, std::vector<LyricLine> Lines, const std::string& Status);
+	static void Store(const std::string& Id, std::vector<LyricLine> Lines, const std::string& Status, double VocalStart = -1.0, double VocalEnd = -1.0);
 	static void Save(bool bForce);
 
 	static inline std::unique_ptr<Separator> Separation;
 	static inline std::unique_ptr<Transcriber> Transcription;
 	static inline std::mutex Mutex;
+	static inline std::mutex TranscribeLock;
 	static inline std::condition_variable Wake;
 	static inline std::deque<Job> Pending;
 	static inline std::unordered_set<std::string> Queued;

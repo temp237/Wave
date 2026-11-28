@@ -30,6 +30,14 @@ int main() {
 	library.Start();
 	TaskQueue covers;
 	covers.Start();
+	OnlineDownloader::Init();
+	TaskQueue online;
+	online.Start();
+	TaskQueue downloads;
+	downloads.Start();
+	TaskQueue previews;
+	previews.Start();
+	std::atomic<uint64_t> previewGeneration = 0;
 
 	TcpSocket socket;
 	socket.Start();
@@ -256,6 +264,24 @@ int main() {
 			socket.Send(EncodeMessage({ MessageType::SetRepeat, { mode != nullptr } }));
 			break;
 		}
+		case MessageType::SetSkipToVocals: {
+			const bool* on = msg->BoolAt(0);
+			if (on) {
+				Queue::SetSkipToVocals(*on);
+				Settings::Merge("playback", { { "skipToVocals", *on } });
+			}
+			socket.Send(EncodeMessage({ MessageType::SetSkipToVocals, { on != nullptr } }));
+			break;
+		}
+		case MessageType::SetCrossfade: {
+			const double* seconds = msg->DoubleAt(0);
+			if (seconds) {
+				Player::SetCrossfade(*seconds);
+				Settings::Merge("playback", { { "crossfade", std::clamp(*seconds, 0.0, Crossfade::MaxSeconds) } });
+			}
+			socket.Send(EncodeMessage({ MessageType::SetCrossfade, { seconds != nullptr } }));
+			break;
+		}
 		case MessageType::GetQueue:
 			socket.Send(EncodeMessage({ MessageType::GetQueue, { Queue::StateJson() } }));
 			break;
@@ -406,6 +432,67 @@ int main() {
 				socket.Send(EncodeMessage({ MessageType::ClearLyrics, { true, result.dump() } }));
 			});
 			break;
+		case MessageType::DownloaderSearch:
+			online.Post([&socket, query = msg->StringAt(0) ? *msg->StringAt(0) : std::string()] {
+				std::string error;
+				const std::vector<TrackBlob> results = OnlineDownloader::Search(query, error);
+				nlohmann::json list = nlohmann::json::array();
+				for (const TrackBlob& blob : results)
+					list.push_back(blob.ToJson());
+				const nlohmann::json reply = { { "query", query }, { "results", list } };
+				socket.Send(EncodeMessage({ MessageType::DownloaderSearch, { error.empty(), error.empty() ? reply.dump() : error } }));
+			});
+			break;
+		case MessageType::DownloaderDownload: {
+			const std::string* id = msg->StringAt(0);
+			const bool known = id && OnlineDownloader::Find(*id).has_value();
+			socket.Send(EncodeMessage({ MessageType::DownloaderDownload, { known } }));
+			if (!known)
+				break;
+			const auto report = [&socket](const std::string& trackId, const std::string& status, double progress, const std::string& fileId, const std::string& error) {
+				const nlohmann::json event = { { "id", trackId }, { "status", status }, { "progress", progress }, { "fileId", fileId }, { "error", error } };
+				socket.Send(EncodeMessage({ MessageType::DownloadProgress, { event.dump() } }));
+			};
+			report(*id, "queued", 0.0, "", "");
+			downloads.Post([report, trackId = *id] {
+				report(trackId, "downloading", 0.0, "", "");
+				std::string error;
+				const std::optional<std::filesystem::path> path = OnlineDownloader::Download(trackId, OnlineDownloader::DownloadsDirectory(),
+					[&](double progress) { report(trackId, "downloading", progress, "", ""); }, error);
+				std::optional<std::string> fileId;
+				if (path) {
+					fileId = AppData::RegisterFile(*path, OnlineDownloader::LibraryFolder);
+					if (!fileId)
+						error = "Saved the file, but couldn't add it to the Library";
+				}
+				if (fileId)
+					report(trackId, "done", 1.0, *fileId, "");
+				else {
+					Logger::Error("[OnlineDownloader] Download " + trackId + " failed: " + error);
+					report(trackId, "error", 0.0, "", error.empty() ? "The download failed" : error);
+				}
+			});
+			break;
+		}
+		case MessageType::PreviewTrack: {
+			const uint64_t generation = ++previewGeneration;
+			previews.Post([&socket, &previewGeneration, generation, id = msg->StringAt(0) ? *msg->StringAt(0) : std::string()] {
+				std::string error;
+				bool ok = false;
+				if (generation == previewGeneration) {
+					const std::optional<std::filesystem::path> path = OnlineDownloader::Preview(id, error);
+					if (path && generation == previewGeneration) {
+						ok = Player::Play(*path, OnlineDownloader::PreviewPrefix + id);
+						if (!ok)
+							error = "Couldn't play the preview";
+					}
+				}
+				if (!ok && error.empty())
+					error = "superseded";
+				socket.Send(EncodeMessage({ MessageType::PreviewTrack, { ok, error } }));
+			});
+			break;
+		}
 		case MessageType::ClearLogs: {
 			const uint64_t freed = Logger::Clear();
 			const Logger::LogStats stats = Logger::Stats();
@@ -424,6 +511,9 @@ int main() {
 	Logger::Info("[Wave] Frontend disconnected, shutting down");
 	library.Stop();
 	covers.Stop();
+	online.Stop();
+	downloads.Stop();
+	previews.Stop();
 	Queue::Shutdown();
 	Player::OnStateChanged({});
 	Visualizer::Stop();

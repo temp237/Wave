@@ -86,6 +86,8 @@ nlohmann::json File::ToJson(bool bIncludeLyrics) const
     j["scanned"] = bScanned;
     j["lyricsStatus"] = LyricsStatus;
     j["lyricsVersion"] = LyricsVersion;
+    j["vocalStart"] = VocalStart;
+    j["vocalEnd"] = VocalEnd;
     if (bIncludeLyrics) {
         nlohmann::json lines = nlohmann::json::array();
         for (const LyricLine& line : Lyrics)
@@ -110,6 +112,8 @@ std::optional<File> File::FromJson(const nlohmann::json& j)
     file.bScanned = j.value("scanned", false);
     file.LyricsStatus = j.value("lyricsStatus", std::string());
     file.LyricsVersion = j.value("lyricsVersion", file.LyricsStatus.empty() ? 0 : 1);
+    file.VocalStart = j.value("vocalStart", -1.0);
+    file.VocalEnd = j.value("vocalEnd", -1.0);
     if (auto it = j.find("lyrics"); it != j.end() && it->is_array()) {
         for (const auto& line : *it) {
             if (line.is_object())
@@ -657,7 +661,7 @@ std::vector<std::pair<std::string, std::filesystem::path>> AppData::FilesNeeding
     return missing;
 }
 
-bool AppData::SetLyrics(const std::string& Id, std::vector<LyricLine> Lines, const std::string& Status, int Version)
+bool AppData::SetLyrics(const std::string& Id, std::vector<LyricLine> Lines, const std::string& Status, int Version, double VocalStart, double VocalEnd)
 {
     std::lock_guard lock(Mutex);
     GetFileTree();
@@ -669,6 +673,8 @@ bool AppData::SetLyrics(const std::string& Id, std::vector<LyricLine> Lines, con
             file->Lyrics = std::move(Lines);
             file->LyricsStatus = Status;
             file->LyricsVersion = Version;
+            file->VocalStart = VocalStart;
+            file->VocalEnd = VocalEnd;
             return true;
         }
     }
@@ -689,6 +695,8 @@ size_t AppData::ClearLyrics()
         file->Lyrics.clear();
         file->LyricsStatus.clear();
         file->LyricsVersion = 0;
+        file->VocalStart = -1.0;
+        file->VocalEnd = -1.0;
     }
     UpdateFileTree(FileTreeCache);
     Logger::Info("[AppData] Cleared cached lyrics for " + std::to_string(cleared) + " songs");

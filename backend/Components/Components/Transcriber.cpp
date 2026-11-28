@@ -144,6 +144,7 @@ Transcriber::VocalMap Transcriber::FindActivity(const std::vector<float>& Mono)
 	std::vector<float> sorted = levels;
 	const size_t top = sorted.size() * 98 / 100;
 	std::nth_element(sorted.begin(), sorted.begin() + top, sorted.end());
+	map.Reference = sorted[top];
 	const double threshold = std::max(ActivityFloorDb, sorted[top] - ActivityRangeDb);
 
 	for (size_t f = 0; f < count; f++) {
@@ -157,6 +158,27 @@ Transcriber::VocalMap Transcriber::FindActivity(const std::vector<float>& Mono)
 			runs.push_back({ start, end });
 	}
 	return map;
+}
+
+void Transcriber::DropQuietSegments(std::vector<Word>& Words, const VocalMap& Map)
+{
+	const double floor = std::max(QuietSegmentDb, Map.Reference - QuietBelowReferenceDb);
+	std::vector<Word> kept;
+	kept.reserve(Words.size());
+	size_t first = 0;
+	for (size_t i = 0; i < Words.size(); i++) {
+		if (!Words[i].bSegmentEnd && i + 1 < Words.size())
+			continue;
+		const size_t from = std::min(Map.Levels.size(), static_cast<size_t>(Words[first].Start / FrameSeconds));
+		const size_t to = std::min(Map.Levels.size(), static_cast<size_t>(Words[i].End / FrameSeconds) + 1);
+		float peak = -std::numeric_limits<float>::infinity();
+		for (size_t f = from; f < to; f++)
+			peak = std::max(peak, Map.Levels[f]);
+		if (peak >= floor)
+			kept.insert(kept.end(), Words.begin() + first, Words.begin() + i + 1);
+		first = i + 1;
+	}
+	Words = std::move(kept);
 }
 
 std::vector<Transcriber::Chunk> Transcriber::PlanChunks(const VocalMap& Map, double Duration)
@@ -222,7 +244,24 @@ bool Transcriber::LooksRepetitive(const std::vector<Word>& Words)
 	return best * 2 > lowered.size();
 }
 
-bool Transcriber::DecodeChunk(whisper_state* State, const std::vector<float>& Mono, const Chunk& Piece, float Temperature, const std::atomic<bool>* Cancel, std::vector<Word>& Out)
+int Transcriber::DetectLanguage(whisper_state* State, const std::vector<float>& Mono, const std::vector<Chunk>& Chunks)
+{
+	const Chunk* loudest = nullptr;
+	for (const Chunk& chunk : Chunks) {
+		if (!loudest || chunk.Voiced > loudest->Voiced)
+			loudest = &chunk;
+	}
+	if (!loudest)
+		return -1;
+	const size_t first = std::min(Mono.size(), static_cast<size_t>(loudest->Start * SampleRate));
+	const size_t last = std::min(Mono.size(), static_cast<size_t>(loudest->End * SampleRate));
+	if (last <= first || whisper_pcm_to_mel_with_state(Context, State, Mono.data() + first, static_cast<int>(last - first), Threads) != 0)
+		return -1;
+	std::vector<float> probs(whisper_lang_max_id() + 1, 0.f);
+	return whisper_lang_auto_detect_with_state(Context, State, 0, Threads, probs.data());
+}
+
+bool Transcriber::DecodeChunk(whisper_state* State, const std::vector<float>& Mono, const Chunk& Piece, const char* Language, float Temperature, const std::atomic<bool>* Cancel, std::vector<Word>& Out)
 {
 	const size_t first = std::min(Mono.size(), static_cast<size_t>(Piece.Start * SampleRate));
 	const size_t last = std::min(Mono.size(), static_cast<size_t>(Piece.End * SampleRate));
@@ -230,8 +269,8 @@ bool Transcriber::DecodeChunk(whisper_state* State, const std::vector<float>& Mo
 		return true;
 
 	whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
-	params.n_threads = 4;
-	params.language = "auto";
+	params.n_threads = Threads;
+	params.language = Language;
 	params.translate = false;
 	params.no_context = true;
 	params.token_timestamps = true;
@@ -283,10 +322,10 @@ bool Transcriber::DecodeChunk(whisper_state* State, const std::vector<float>& Mo
 	return true;
 }
 
-bool Transcriber::DecodeAdaptive(whisper_state* State, const std::vector<float>& Mono, const VocalMap& Map, const Chunk& Piece, const std::atomic<bool>* Cancel, std::vector<Word>& Out)
+bool Transcriber::DecodeAdaptive(whisper_state* State, const std::vector<float>& Mono, const VocalMap& Map, const Chunk& Piece, const char* Language, const std::atomic<bool>* Cancel, std::vector<Word>& Out)
 {
 	std::vector<Word> words;
-	if (!DecodeChunk(State, Mono, Piece, 0.f, Cancel, words))
+	if (!DecodeChunk(State, Mono, Piece, Language, 0.f, Cancel, words))
 		return false;
 	const auto voicedIn = [&](double From, double To) {
 		double voiced = 0.0;
@@ -314,14 +353,14 @@ bool Transcriber::DecodeAdaptive(whisper_state* State, const std::vector<float>&
 		const Chunk left{ Piece.Start, cut, voicedIn(Piece.Start, cut) };
 		const Chunk right{ cut, Piece.End, voicedIn(cut, Piece.End) };
 		std::vector<Word> split;
-		if (!DecodeAdaptive(State, Mono, Map, left, Cancel, split) || !DecodeAdaptive(State, Mono, Map, right, Cancel, split))
+		if (!DecodeAdaptive(State, Mono, Map, left, Language, Cancel, split) || !DecodeAdaptive(State, Mono, Map, right, Language, Cancel, split))
 			return false;
 		if (split.size() > words.size() || bRepetitive)
 			words = std::move(split);
 	}
 	else {
 		std::vector<Word> retry;
-		if (!DecodeChunk(State, Mono, Piece, RetryTemperature, Cancel, retry))
+		if (!DecodeChunk(State, Mono, Piece, Language, RetryTemperature, Cancel, retry))
 			return false;
 		if (!LooksRepetitive(retry) && (retry.size() > words.size() || bRepetitive))
 			words = std::move(retry);
@@ -547,9 +586,12 @@ std::optional<Transcriber::Result> Transcriber::Transcribe(const std::vector<flo
 	}
 
 	const VocalMap map = FindActivity(Mono);
+	const std::vector<Chunk> chunks = PlanChunks(map, static_cast<double>(Mono.size()) / SampleRate);
+	const int language = DetectLanguage(state, Mono, chunks);
+	const char* languageName = language >= 0 ? whisper_lang_str(language) : "auto";
 	Result result;
-	for (const Chunk& piece : PlanChunks(map, static_cast<double>(Mono.size()) / SampleRate)) {
-		if (!DecodeAdaptive(state, Mono, map, piece, Cancel, result.Words)) {
+	for (const Chunk& piece : chunks) {
+		if (!DecodeAdaptive(state, Mono, map, piece, languageName, Cancel, result.Words)) {
 			Release(state);
 			Error = Cancel && Cancel->load() ? "cancelled" : "Whisper couldn't transcribe the vocals";
 			return std::nullopt;
@@ -557,7 +599,16 @@ std::optional<Transcriber::Result> Transcriber::Transcribe(const std::vector<flo
 	}
 	Release(state);
 
+	for (const Activity& run : map.Runs) {
+		if (run.End - run.Start < MinVocalRunSeconds)
+			continue;
+		if (result.VocalStart < 0)
+			result.VocalStart = run.Start;
+		result.VocalEnd = run.End;
+	}
+
 	FixTimings(result.Words, map.Runs);
+	DropQuietSegments(result.Words, map);
 	result.Lines = BuildLines(result.Words);
 	return result;
 }

@@ -38,6 +38,11 @@
       <symbol id="i-settings" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></g></symbol>
       <symbol id="i-chevron-down" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></g></symbol>
       <symbol id="i-close" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></g></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></g></symbol>
+      <symbol id="i-heart" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20.5s-7.5-4.6-9.3-9.2C1.5 8.2 3.6 4.5 7.2 4.5c2 0 3.5 1.1 4.8 2.8 1.3-1.7 2.8-2.8 4.8-2.8 3.6 0 5.7 3.7 4.5 6.8-1.8 4.6-9.3 9.2-9.3 9.2z"/></g></symbol>
+      <symbol id="i-repost" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 3-3 3 3 3"/><path d="M4 6h11a4 4 0 0 1 4 4v1"/><path d="m17 21 3-3-3-3"/><path d="M20 18H9a4 4 0 0 1-4-4v-1"/></g></symbol>
+      <symbol id="i-retry" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></g></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></g></symbol>
       <symbol id="i-clock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></g></symbol>
     </svg>
 
@@ -57,6 +62,11 @@
             <svg class="i"><use href="#i-library" /></svg>
             <span class="nav-label">Library</span>
             <span class="nav-count" id="libCount"></span>
+          </button>
+          <button class="nav-item" id="downloaderBtn" data-key="downloader">
+            <svg class="i"><use href="#i-download" /></svg>
+            <span class="nav-label">Downloader</span>
+            <span class="nav-count" id="dlCount"></span>
           </button>
         </nav>
 
@@ -88,10 +98,10 @@
         </header>
 
         <div class="toolbar">
-          <button class="play-big" id="playAllBtn" aria-label="Play">
+          <button class="play-big lib-only" id="playAllBtn" aria-label="Play">
             <svg class="i"><use href="#i-play" /></svg>
           </button>
-          <button class="icon-btn" id="shuffleAllBtn" aria-label="Shuffle play">
+          <button class="icon-btn lib-only" id="shuffleAllBtn" aria-label="Shuffle play">
             <svg class="i"><use href="#i-shuffle" /></svg>
           </button>
           <button class="icon-btn" id="renameBtn" aria-label="Rename playlist">
@@ -107,15 +117,15 @@
             <svg class="i"><use href="#i-search" /></svg>
             <input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" />
           </label>
-          <button class="btn" data-action="import-files" aria-label="Import audio files">
+          <button class="btn lib-only" data-action="import-files" aria-label="Import audio files">
             <svg class="i"><use href="#i-upload" /></svg><span>Import</span>
           </button>
-          <button class="btn icon-only" data-action="import-folder" aria-label="Import a folder">
+          <button class="btn icon-only lib-only" data-action="import-folder" aria-label="Import a folder">
             <svg class="i"><use href="#i-folder" /></svg>
           </button>
         </div>
 
-        <section class="tracks">
+        <section class="tracks" id="trackSection">
           <div class="track-head" id="trackHead">
             <span class="c-num">#</span>
             <span class="c-title">Title</span>
@@ -126,6 +136,19 @@
           </div>
           <ol class="track-list" id="trackList"></ol>
           <div class="empty" id="emptyState" hidden></div>
+        </section>
+
+        <section class="tracks downloads" id="dlSection">
+          <div class="track-head dl-head" id="dlHead" hidden>
+            <span class="c-num">#</span>
+            <span class="c-title">Title</span>
+            <span class="c-stat" title="Likes"><svg class="i"><use href="#i-heart" /></svg></span>
+            <span class="c-stat" title="Reposts"><svg class="i"><use href="#i-repost" /></svg></span>
+            <span class="c-dur"><svg class="i"><use href="#i-clock" /></svg></span>
+            <span></span>
+          </div>
+          <ol class="track-list" id="dlList"></ol>
+          <div class="empty" id="dlState"></div>
         </section>
       </main>
 
@@ -289,6 +312,32 @@
           <div class="settings-section">
             <div class="settings-row">
               <div>
+                <h3>Skip to vocals</h3>
+                <p>Starts each song 5 seconds before the singing begins and moves on 5 seconds after it ends. Works once a song's lyrics have been processed.</p>
+              </div>
+              <label class="switch" aria-label="Turn skip to vocals on or off">
+                <input type="checkbox" id="skipToVocals" />
+                <span class="switch-track"><span class="switch-thumb"></span></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-row">
+              <div>
+                <h3>Crossfade</h3>
+                <p>Blends the end of each song into the start of the next one when the queue moves on by itself. Set it to 0 to turn it off.</p>
+              </div>
+            </div>
+            <label class="eq-field">
+              <span>Duration <b id="crossfadeValue">Off</b></span>
+              <input type="range" id="crossfadeSeconds" min="0" max="12" step="1" value="0" aria-label="Crossfade duration" />
+            </label>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-row">
+              <div>
                 <h3>De-esser</h3>
                 <p>Softens harsh "s" and "t" sounds. Auto finds the harsh frequency in each song for you.</p>
               </div>
@@ -320,6 +369,16 @@
               </div>
               <label class="switch">
                 <input type="checkbox" id="showQueueSetting" />
+                <span class="switch-track"><span class="switch-thumb"></span></span>
+              </label>
+            </div>
+            <div class="settings-row">
+              <div>
+                <h3>Playlist cover collage</h3>
+                <p>Show the covers of a playlist's first 4 songs as its picture.</p>
+              </div>
+              <label class="switch" aria-label="Turn playlist cover collages on or off">
+                <input type="checkbox" id="playlistCoversSetting" checked />
                 <span class="switch-track"><span class="switch-thumb"></span></span>
               </label>
             </div>

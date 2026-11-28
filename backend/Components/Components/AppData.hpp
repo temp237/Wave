@@ -30,6 +30,8 @@ struct File {
 	std::string LyricsStatus;
 	int LyricsVersion = 0;
 	std::vector<LyricLine> Lyrics;
+	double VocalStart = -1.0;
+	double VocalEnd = -1.0;
 
 	const std::string& Id() const;
 
@@ -151,7 +153,7 @@ public:
 	static std::optional<File> FindFile(const std::string& Id);
 	static std::vector<std::pair<std::string, std::filesystem::path>> AllFilePaths();
 	static std::vector<std::pair<std::string, std::filesystem::path>> FilesNeedingLyrics(int Version);
-	static bool SetLyrics(const std::string& Id, std::vector<LyricLine> Lines, const std::string& Status, int Version);
+	static bool SetLyrics(const std::string& Id, std::vector<LyricLine> Lines, const std::string& Status, int Version, double VocalStart = -1.0, double VocalEnd = -1.0);
 	static size_t ClearLyrics();
 	static nlohmann::json LyricsInfo();
 	static void SaveFileTree();

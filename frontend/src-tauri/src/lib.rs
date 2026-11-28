@@ -73,6 +73,12 @@ pub(crate) enum MessageType {
     Spectrum = 46,
     GetArtwork = 47,
     ClearLyrics = 48,
+    DownloaderSearch = 49,
+    DownloaderDownload = 50,
+    DownloadProgress = 51,
+    PreviewTrack = 52,
+    SetSkipToVocals = 53,
+    SetCrossfade = 54,
 }
 
 // Tag order must match the std::variant in backend Messages.hpp
@@ -295,6 +301,14 @@ fn read_loop(app: &AppHandle, mut reader: TcpStream) {
             if let [Value::Str(json), ..] = values.as_slice() {
                 if let Ok(state) = serde_json::from_str::<serde_json::Value>(json) {
                     let _ = app.emit("wave-queue", state);
+                }
+            }
+            continue;
+        }
+        if message_type == MessageType::DownloadProgress as u8 {
+            if let [Value::Str(json), ..] = values.as_slice() {
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(json) {
+                    let _ = app.emit("wave-download", event);
                 }
             }
             continue;
@@ -563,6 +577,16 @@ async fn set_normalize(backend: tauri::State<'_, Backend>, enabled: bool) -> Res
 }
 
 #[tauri::command]
+async fn set_skip_to_vocals(backend: tauri::State<'_, Backend>, enabled: bool) -> Result<bool, String> {
+    expect_ok(request(&backend, MessageType::SetSkipToVocals, &[Value::Bool(enabled)], Duration::from_secs(5))?)
+}
+
+#[tauri::command]
+async fn set_crossfade(backend: tauri::State<'_, Backend>, seconds: f64) -> Result<bool, String> {
+    expect_ok(request(&backend, MessageType::SetCrossfade, &[Value::F64(seconds)], Duration::from_secs(5))?)
+}
+
+#[tauri::command]
 async fn get_normalize(backend: tauri::State<'_, Backend>) -> Result<serde_json::Value, String> {
     queue_state(request(&backend, MessageType::GetNormalize, &[], Duration::from_secs(10))?)
 }
@@ -631,6 +655,31 @@ async fn clear_logs(backend: tauri::State<'_, Backend>) -> Result<serde_json::Va
     match reply.as_slice() {
         [Value::Bool(true), Value::Str(json), ..] => serde_json::from_str(json).map_err(|e| format!("bad reply JSON: {e}")),
         _ => Err("the backend couldn't clear the logs".into()),
+    }
+}
+
+#[tauri::command]
+async fn downloader_search(backend: tauri::State<'_, Backend>, query: String) -> Result<serde_json::Value, String> {
+    let reply = request(&backend, MessageType::DownloaderSearch, &[Value::Str(query)], Duration::from_secs(45))?;
+    match reply.as_slice() {
+        [Value::Bool(true), Value::Str(json), ..] => serde_json::from_str(json).map_err(|e| format!("bad search JSON: {e}")),
+        [Value::Bool(false), Value::Str(error), ..] => Err(error.clone()),
+        _ => Err("unexpected reply from the backend".into()),
+    }
+}
+
+#[tauri::command]
+async fn downloader_download(backend: tauri::State<'_, Backend>, id: String) -> Result<bool, String> {
+    expect_ok(request(&backend, MessageType::DownloaderDownload, &[Value::Str(id)], Duration::from_secs(10))?)
+}
+
+#[tauri::command]
+async fn preview_track(backend: tauri::State<'_, Backend>, id: String) -> Result<bool, String> {
+    let reply = request(&backend, MessageType::PreviewTrack, &[Value::Str(id)], Duration::from_secs(120))?;
+    match reply.as_slice() {
+        [Value::Bool(true), ..] => Ok(true),
+        [Value::Bool(false), Value::Str(error), ..] => Err(error.clone()),
+        _ => Err("unexpected reply from the backend".into()),
     }
 }
 
@@ -760,6 +809,8 @@ pub fn run() {
             set_deesser,
             set_normalize,
             get_normalize,
+            set_skip_to_vocals,
+            set_crossfade,
             get_lyrics,
             set_visualizer,
             get_artwork,
@@ -773,6 +824,9 @@ pub fn run() {
             get_player_state,
             get_backend_status,
             remove_from_library,
+            downloader_search,
+            downloader_download,
+            preview_track,
             queue_set,
             queue_next,
             queue_previous,

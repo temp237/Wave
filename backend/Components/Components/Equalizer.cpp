@@ -14,8 +14,7 @@
 #include "Normalize.hpp"
 #include "Settings.hpp"
 #include "Logger.hpp"
-#include "MicRelay.hpp"
-#include "AudioRelay.hpp"
+#include "Crossfade.hpp"
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfuuid.lib")
@@ -42,6 +41,7 @@ private:
     std::vector<std::array<std::array<float, 2>, BandCount>> History;
     DeEsser::Processor DeEss;
     Normalize::Processor Level;
+    int Slot = 0;
 
     static HRESULT CheckType(IMFMediaType* Type, UINT32& OutChannels, UINT32& OutRate)
     {
@@ -133,6 +133,8 @@ private:
     }
 
 public:
+    explicit Transform(int Slot) : Level(Slot), Slot(Slot) {}
+
     ~Transform()
     {
         if (Pending) Pending->Release();
@@ -366,6 +368,7 @@ public:
                 Pending = nullptr;
             }
             ResetHistory();
+            Crossfade::Flush(Slot);
         }
         return S_OK;
     }
@@ -405,8 +408,7 @@ public:
                     LONGLONG sampleTime = -1;
                     if (FAILED(Pending->GetSampleTime(&sampleTime)))
                         sampleTime = -1;
-                    MicRelay::Write(reinterpret_cast<const float*>(data), frames, Channels, SampleRate, sampleTime);
-                    AudioRelay::Write(reinterpret_cast<float*>(data), frames, Channels, SampleRate, sampleTime);
+                    Crossfade::Process(Slot, reinterpret_cast<float*>(data), frames, Channels, SampleRate, sampleTime);
                 }
                 buffer->Unlock();
             }
@@ -422,9 +424,9 @@ public:
     }
 };
 
-IUnknown* Equalizer::CreateEffect()
+IUnknown* Equalizer::CreateEffect(int Slot)
 {
-    return static_cast<IMFTransform*>(new Transform());
+    return static_cast<IMFTransform*>(new Transform(Slot));
 }
 
 void Equalizer::Set(const Settings& Value)

@@ -30,7 +30,7 @@ public:
 	static nlohmann::json ToJson();
 	static bool FromJson(const nlohmann::json& j);
 
-	static IUnknown* CreateEffect();
+	static IUnknown* CreateEffect(int Slot);
 
 private:
 	class Transform;

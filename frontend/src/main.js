@@ -29,9 +29,12 @@ const state = {
 
   volume: 0.8,
   muted: false,
+  playlistCovers: true,
 };
 
 let seeking = false;
+const queuePlaying = () => !player.paused && !player.isPreview;
+const PREVIEW_PREFIX = "preview:";
 
 class BackendPlayer extends EventTarget {
   #status = "stopped";
@@ -52,8 +55,20 @@ class BackendPlayer extends EventTarget {
     return this.#status !== "playing" && this.#status !== "loading";
   }
 
+  get status() {
+    return this.#status;
+  }
+
   get currentTime() {
     return this.#position;
+  }
+
+  get fileId() {
+    return this.#fileId;
+  }
+
+  get isPreview() {
+    return !!this.#fileId?.startsWith(PREVIEW_PREFIX);
   }
 
   get livePosition() {
@@ -117,7 +132,9 @@ class BackendPlayer extends EventTarget {
   }
 
   #update(s) {
+    const beforeFile = this.#fileId;
     this.#fileId = s.fileId || null;
+    if (this.#fileId !== beforeFile) this.#emit("filechange");
     const before = this.#status;
     const beforeDuration = this.#duration;
     this.#status = s.status;
@@ -208,7 +225,7 @@ function toast(msg) {
 // ---------------------------------------------------------------------------
 // Views
 // ---------------------------------------------------------------------------
-const viewKey = (v = state.view) => (v.type === "library" ? `lib:${(v.path || []).join("/")}` : `pl:${v.id}`);
+const viewKey = (v = state.view) => (v.type === "library" ? `lib:${(v.path || []).join("/")}` : v.type === "downloader" ? "dl" : `pl:${v.id}`);
 
 const LOOSE_FOLDER = "__loose";
 const libPath = () => (state.view.type === "library" ? state.view.path || [] : []);
@@ -278,7 +295,7 @@ function setView(view, record = true) {
   state.picked = new Set();
   state.anchor = null;
   state.query = "";
-  $("#search").value = "";
+  $("#search").value = view.type === "downloader" ? downloader.query : "";
   render();
   $("#main").scrollTop = 0;
 }
@@ -389,15 +406,19 @@ const isSelected = (kind, key) => (kind === "folder" ? state.selected?.key === k
 function render() {
   if (state.view.type === "playlist" && !currentPlaylist()) state.view = { type: "library", path: [] };
   if (state.view.type === "library" && !currentFolder()) state.view = { type: "library", path: [] };
+  $("#main").classList.toggle("downloader-view", state.view.type === "downloader");
   renderSidebar();
   renderHeader();
   renderList();
+  downloader.render();
   renderPlayState();
 }
 
 function renderSidebar() {
   $("#libCount").textContent = state.order.length || "";
   $("#libraryBtn").classList.toggle("active", state.view.type === "library");
+  $("#downloaderBtn").classList.toggle("active", state.view.type === "downloader");
+  $("#dlCount").textContent = downloader.activeCount || "";
 
   const list = $("#playlistList");
   if (!state.playlists.length) {
@@ -409,7 +430,7 @@ function renderSidebar() {
       const active = state.view.type === "playlist" && state.view.id === p.id;
       return `<li>
         <button class="pl-item${active ? " active" : ""}" data-id="${p.id}" data-key="pl:${p.id}" data-name="${esc(p.name)}">
-          <span class="pl-cover" style="--h:${hue(p.id)}">${icon("music")}<span class="pl-play" role="button" aria-label="Play ${esc(p.name)}">${icon("play")}</span></span>
+          <span class="pl-cover" style="--h:${hue(p.id)}">${icon("music")}${mosaicHTML(playlistCoverUrls(p))}<span class="pl-play" role="button" aria-label="Play ${esc(p.name)}">${icon("play")}</span></span>
           <span class="pl-name">${esc(p.name)}</span>
           <span class="pl-count">${p.trackIds.length || ""}</span>
         </button>
@@ -419,6 +440,18 @@ function renderSidebar() {
 }
 
 function renderHeader() {
+  if (state.view.type === "downloader") {
+    $("#main").style.setProperty("--h", 290);
+    $("#viewEyebrow").textContent = "SoundCloud";
+    $("#viewTitle").textContent = "Downloader";
+    $("#viewSub").textContent = downloader.summary();
+    setViewCover("download");
+    $("#renameBtn").hidden = true;
+    $("#deleteBtn").hidden = true;
+    $("#search").placeholder = "Search SoundCloud";
+    return;
+  }
+  $("#search").placeholder = "Search";
   const pl = currentPlaylist();
   const path = libPath();
   const src = viewSource();
@@ -442,7 +475,7 @@ function renderHeader() {
   parts.push(`${src.length} ${src.length === 1 ? "track" : "tracks"}`);
   if (total) parts.push(fmtLong(total));
   $("#viewSub").textContent = parts.join(" · ");
-  setIcon($("#viewCover"), pl ? "music" : path.length ? "folder" : "library");
+  setViewCover(pl ? "music" : path.length ? "folder" : "library", pl ? playlistCoverUrls(pl) : []);
 
   $("#playAllBtn").disabled = !src.length;
   $("#shuffleAllBtn").disabled = !src.length;
@@ -472,6 +505,7 @@ function requestCover(id) {
 
 async function flushCovers() {
   const ids = [...coverWanted].slice(0, 64);
+  let loaded = false;
   for (const id of ids) {
     coverWanted.delete(id);
     coverCache.set(id, null);
@@ -483,12 +517,45 @@ async function flushCovers() {
       const blob = await (await fetch(found[id])).blob();
       const url = URL.createObjectURL(blob);
       coverCache.set(id, url);
+      loaded = true;
       for (const el of document.querySelectorAll(`[data-cover="${id}"]`)) el.innerHTML = coverImg(url);
     }
   } catch (err) {
     console.warn("Wave: couldn't load covers", err);
   }
+  if (loaded && state.playlists.length) {
+    renderSidebar();
+    const pl = currentPlaylist();
+    if (pl) setViewCover("music", playlistCoverUrls(pl));
+  }
   coverFlush = coverWanted.size ? setTimeout(flushCovers, 0) : null;
+}
+
+function playlistCoverUrls(p) {
+  if (!state.playlistCovers) return [];
+  const seen = new Set();
+  const urls = [];
+  for (const id of p.trackIds) {
+    const key = state.tracks.get(id)?.coverKey;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    if (!coverCache.has(key)) requestCover(key);
+    const url = coverCache.get(key);
+    if (url) urls.push(url);
+    if (urls.length === 4 || seen.size >= 24) break;
+  }
+  return urls.length >= 4 ? urls : urls.slice(0, 1);
+}
+
+const mosaicHTML = (urls) =>
+  urls.length ? `<span class="cover-mosaic${urls.length === 4 ? " grid" : ""}">${urls.map(coverImg).join("")}</span>` : "";
+
+function setViewCover(name, urls = []) {
+  const el = $("#viewCover");
+  const key = `${name}|${urls.join("|")}`;
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  el.innerHTML = icon(name) + mosaicHTML(urls);
 }
 
 function prefetchCovers() {
@@ -530,7 +597,7 @@ function folderRowHTML(folder) {
 
 function rowHTML(t, i) {
   const current = t.id === state.currentId;
-  const playing = current && !player.paused;
+  const playing = current && queuePlaying();
   const classes = `row${isSelected("track", t.id) ? " selected" : ""}${current ? " current" : ""}${playing ? " is-playing" : ""}`;
   return `<li class="${classes}" data-id="${t.id}" draggable="true">
     <span class="col-num">
@@ -578,6 +645,11 @@ function emptyHTML() {
 }
 
 function renderList() {
+  if (state.view.type === "downloader") {
+    ++listRenderToken;
+    $("#trackList").innerHTML = "";
+    return;
+  }
   const ids = visibleIds();
   const folders = visibleFolders();
   const list = $("#trackList");
@@ -613,7 +685,7 @@ function renderList() {
 let listRenderToken = 0;
 
 function renderRowsState() {
-  const playing = !player.paused;
+  const playing = queuePlaying();
   for (const row of $("#trackList").querySelectorAll(".row")) {
     const cur = row.dataset.id === state.currentId;
     row.classList.toggle("current", cur);
@@ -628,11 +700,11 @@ function renderPlayState() {
   setIcon(playBtn, playing ? "pause" : "play");
   playBtn.ariaLabel = playing ? "Pause" : "Play";
 
-  const thisViewPlaying = playing && state.queue.source === viewKey();
+  const thisViewPlaying = queuePlaying() && state.queue.source === viewKey();
   setIcon($("#playAllBtn"), thisViewPlaying ? "pause" : "play");
 
   for (const el of document.querySelectorAll(".pl-item")) {
-    const live = playing && state.queue.source === el.dataset.key;
+    const live = queuePlaying() && state.queue.source === el.dataset.key;
     el.classList.toggle("live", live);
     const play = el.querySelector(".pl-play");
     if (play) {
@@ -641,13 +713,25 @@ function renderPlayState() {
     }
   }
   renderRowsState();
+  downloader.paintPreview();
   const currentPlay = $("#queueBody")?.querySelector(".q-item.current .q-play");
-  if (currentPlay) setIcon(currentPlay, playing ? "pause" : "play");
+  if (currentPlay) setIcon(currentPlay, queuePlaying() ? "pause" : "play");
 }
 
 function renderNow() {
-  const t = state.tracks.get(state.currentId);
   const art = $("#nowArt");
+  const preview = downloader.previewInfo(player.fileId);
+  if (preview) {
+    $("#nowTitle").textContent = preview.title;
+    $("#nowArtist").textContent = `${preview.artist} · Preview`;
+    art.classList.remove("idle");
+    art.style.setProperty("--h", hue(preview.artist + preview.title));
+    delete art.dataset.cover;
+    art.innerHTML = preview.thumbnailUrl ? coverImg(esc(preview.thumbnailUrl)) : icon("music");
+    document.title = `${preview.title} · ${preview.artist}`;
+    return;
+  }
+  const t = state.tracks.get(state.currentId);
   if (!t) {
     $("#nowTitle").textContent = "Nothing playing";
     $("#nowArtist").textContent = "Pick a track to start";
@@ -748,7 +832,7 @@ async function sendDebug() {
 }
 
 function togglePlay() {
-  if (!state.currentId) {
+  if (!state.currentId && !player.fileId) {
     const ids = playableIds();
     if (ids.length) playFrom(ids, state.queue.shuffle ? Math.floor(Math.random() * ids.length) : 0);
     return;
@@ -800,7 +884,7 @@ function queueSourceLabel(source) {
 function queueItemHTML(id, index, current) {
   const t = state.tracks.get(id);
   if (!t) return "";
-  const playing = current && !player.paused;
+  const playing = current && queuePlaying();
   return `<li class="q-item${current ? " current" : ""}" data-index="${index}">
     <span class="q-art">
       <span class="art" data-cover="${t.coverKey}" style="--h:${hue(t.artist + t.title)}">${coverHTML(t)}</span>
@@ -848,7 +932,7 @@ function queueItemMenu(index, x, y, el) {
   const t = state.tracks.get(id);
   if (!t) return;
   const current = index === state.queue.index;
-  const playing = current && !player.paused;
+  const playing = current && queuePlaying();
   const sourcePl = source.startsWith("pl:") ? state.playlists.find((p) => p.id === source.slice(3)) : null;
   const items = [
     {
@@ -1294,9 +1378,9 @@ function trackMenu(id, x, y, row) {
   const pl = currentPlaylist();
   const items = [
     {
-      label: state.currentId === id && !player.paused ? "Pause" : "Play",
-      icon: state.currentId === id && !player.paused ? "pause" : "play",
-      action: () => (state.currentId === id ? togglePlay() : playFrom(visibleIds(), visibleIds().indexOf(id))),
+      label: state.currentId === id && queuePlaying() ? "Pause" : "Play",
+      icon: state.currentId === id && queuePlaying() ? "pause" : "play",
+      action: () => (state.currentId === id && !player.isPreview ? togglePlay() : playFrom(visibleIds(), visibleIds().indexOf(id))),
     },
   ];
   if (state.currentId && state.currentId !== id) {
@@ -1519,6 +1603,7 @@ function bindUI() {
 
   // Sidebar
   $("#libraryBtn").onclick = () => setView({ type: "library", path: [] });
+  $("#downloaderBtn").onclick = () => setView({ type: "downloader" });
   $("#viewEyebrow").addEventListener("click", (e) => {
     const crumb = e.target.closest(".crumb");
     if (crumb) setView({ type: "library", path: libPath().slice(0, +crumb.dataset.depth) });
@@ -1544,7 +1629,7 @@ function bindUI() {
 
   // Toolbar
   $("#playAllBtn").onclick = () => {
-    if (state.queue.source === viewKey() && state.currentId) togglePlay();
+    if (state.queue.source === viewKey() && state.currentId && !player.isPreview) togglePlay();
     else playFrom(playableIds(), 0);
   };
   $("#shuffleAllBtn").onclick = async () => {
@@ -1558,11 +1643,34 @@ function bindUI() {
   let searchTimer = null;
   $("#search").addEventListener("input", (e) => {
     clearTimeout(searchTimer);
+    if (state.view.type === "downloader") {
+      searchTimer = setTimeout(() => downloader.search(e.target.value), 500);
+      return;
+    }
     searchTimer = setTimeout(() => {
       state.query = e.target.value;
       renderList();
       $("#main").scrollTop = Math.min($("#main").scrollTop, $(".view-head").offsetHeight);
     }, 120);
+  });
+
+  $("#search").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || state.view.type !== "downloader") return;
+    e.preventDefault();
+    clearTimeout(searchTimer);
+    downloader.search(e.target.value, true);
+  });
+  $("#dlList").addEventListener("click", (e) => {
+    const play = e.target.closest(".dl-play");
+    if (play) {
+      downloader.togglePreview(play.closest(".dl-row").dataset.id);
+      return;
+    }
+    const btn = e.target.closest(".dl-btn");
+    if (btn) downloader.press(btn.closest(".dl-row").dataset.id);
+  });
+  $("#dlState").addEventListener("click", (e) => {
+    if (e.target.closest("[data-dl-retry]")) downloader.search($("#search").value, true);
   });
 
   // Track list
@@ -1590,7 +1698,7 @@ function bindUI() {
       else select("track", id);
     }
     if (e.target.closest(".row-play")) {
-      if (row.dataset.id === state.currentId) togglePlay();
+      if (row.dataset.id === state.currentId && !player.isPreview) togglePlay();
       else playFrom(visibleIds(), rowIndex(row));
     } else if (e.target.closest(".row-more")) {
       const r = e.target.closest(".row-more").getBoundingClientRect();
@@ -1687,6 +1795,10 @@ function bindUI() {
 
   player.addEventListener("play", renderPlayState);
   player.addEventListener("pause", renderPlayState);
+  player.addEventListener("filechange", () => {
+    renderNow();
+    renderPlayState();
+  });
   player.addEventListener("timeupdate", () => {
     if (seeking || !player.duration) return;
     seek.value = (player.currentTime / player.duration) * 1000;
@@ -1832,7 +1944,7 @@ function bindUI() {
     const play = e.target.closest(".q-play");
     if (play) {
       const index = +play.closest(".q-item").dataset.index;
-      if (index === state.queue.index) togglePlay();
+      if (index === state.queue.index && !player.isPreview) togglePlay();
       else queueCall("queue_jump", { index });
     }
   });
@@ -2001,6 +2113,9 @@ async function openSettings() {
     Object.assign(deess, settings.deesser || {});
     renderDeEsser();
     showNormalize(settings.normalize);
+    $("#skipToVocals").checked = settings.playback?.skipToVocals === true;
+    $("#crossfadeSeconds").value = settings.playback?.crossfade || 0;
+    showCrossfade();
     const cache = settings.cache || { bytes: 0, files: 0 };
     $("#cacheInfo").textContent = `${cache.files} cover ${cache.files === 1 ? "image" : "images"} · ${fmtBytes(cache.bytes)}`;
     showLogsInfo(settings.logs);
@@ -2013,6 +2128,11 @@ async function openSettings() {
     $("#cacheInfo").textContent = "Unavailable";
     toast(`Couldn't load settings: ${errText(err)}`);
   }
+}
+
+function showCrossfade() {
+  const seconds = +$("#crossfadeSeconds").value;
+  $("#crossfadeValue").textContent = seconds > 0 ? `${seconds} s` : "Off";
 }
 
 function closeSettings() {
@@ -2110,6 +2230,11 @@ function bindSettings() {
   $("#clearLogsBtn").onclick = clearLogs;
   $("#clearLyricsBtn").onclick = clearLyrics;
   $("#showQueueSetting").addEventListener("change", (e) => toggleQueuePanel(e.target.checked));
+  $("#playlistCoversSetting").addEventListener("change", (e) => {
+    state.playlistCovers = e.target.checked;
+    render();
+    invoke("set_interface", { settings: { playlistCovers: state.playlistCovers } }).catch(() => {});
+  });
   $("#micRelay").addEventListener("change", (e) => {
     const enabled = e.target.checked;
     e.target.disabled = true;
@@ -2193,6 +2318,22 @@ function bindSettings() {
       .catch((err) => {
         e.target.checked = !enabled;
         toast(`Couldn't change volume normalization: ${errText(err)}`);
+      });
+  });
+  $("#crossfadeSeconds").addEventListener("input", showCrossfade);
+  $("#crossfadeSeconds").addEventListener("change", (e) => {
+    const seconds = +e.target.value;
+    invoke("set_crossfade", { seconds })
+      .then(() => toast(seconds > 0 ? `Crossfade set to ${seconds} s` : "Crossfade off"))
+      .catch((err) => toast(`Couldn't change crossfade: ${errText(err)}`));
+  });
+  $("#skipToVocals").addEventListener("change", (e) => {
+    const enabled = e.target.checked;
+    invoke("set_skip_to_vocals", { enabled })
+      .then(() => toast(enabled ? "Skip to vocals on" : "Skip to vocals off"))
+      .catch((err) => {
+        e.target.checked = !enabled;
+        toast(`Couldn't change skip to vocals: ${errText(err)}`);
       });
   });
   $("#deessEnabled").addEventListener("change", (e) => {
@@ -2604,6 +2745,297 @@ class NowPlaying {
 const nowPlaying = new NowPlaying();
 
 // ---------------------------------------------------------------------------
+// Downloader
+// ---------------------------------------------------------------------------
+function fmtCount(n) {
+  n = Number(n) || 0;
+  for (const [size, unit] of [[1e9, "B"], [1e6, "M"], [1e3, "K"]]) {
+    if (n >= size) {
+      const v = n / size;
+      return `${v >= 100 ? Math.round(v) : v.toFixed(1).replace(/\.0$/, "")}${unit}`;
+    }
+  }
+  return String(n);
+}
+
+const DOWNLOADS_FOLDER = "Downloads";
+const isBusy = (job) => job?.status === "queued" || job?.status === "downloading";
+
+class Downloader {
+  #query = "";
+  #status = "idle";
+  #error = "";
+  #results = [];
+  #rendered = null;
+  #jobs = new Map();
+  #token = 0;
+  #previews = new Map();
+  #loadingPreview = null;
+  #previewToken = 0;
+
+  constructor() {
+    tauri?.event?.listen("wave-download", (e) => this.#onProgress(e.payload));
+  }
+
+  get query() {
+    return this.#query;
+  }
+
+  get isOpen() {
+    return state.view.type === "downloader";
+  }
+
+  get activeCount() {
+    let n = 0;
+    for (const job of this.#jobs.values()) if (isBusy(job)) n++;
+    return n;
+  }
+
+  summary() {
+    const parts = [];
+    if (this.#status === "done" && this.#query) {
+      const n = this.#results.length;
+      parts.push(`${n} ${n === 1 ? "result" : "results"} for “${this.#query}”`);
+    } else {
+      parts.push("Search SoundCloud and save tracks to your Library");
+    }
+    const active = this.activeCount;
+    if (active) parts.push(`${active} downloading`);
+    return parts.join(" · ");
+  }
+
+  async search(text, force = false) {
+    const query = String(text || "").trim();
+    if (!force && query === this.#query && (this.#status === "loading" || this.#status === "done")) return;
+    this.#query = query;
+    const token = ++this.#token;
+    if (!query) {
+      this.#status = "idle";
+      this.#results = [];
+      this.render();
+      return;
+    }
+    this.#status = "loading";
+    this.render();
+    try {
+      const reply = await invoke("downloader_search", { query });
+      if (token !== this.#token) return;
+      this.#results = Array.isArray(reply?.results) ? reply.results : [];
+      this.#status = "done";
+    } catch (err) {
+      if (token !== this.#token) return;
+      this.#results = [];
+      this.#error = errText(err);
+      this.#status = "error";
+    }
+    this.render();
+    if (this.isOpen) $("#main").scrollTop = 0;
+  }
+
+  previewInfo(fileId) {
+    if (!fileId?.startsWith(PREVIEW_PREFIX)) return null;
+    return this.#previews.get(fileId.slice(PREVIEW_PREFIX.length)) || null;
+  }
+
+  async togglePreview(id) {
+    const live = player.fileId === PREVIEW_PREFIX + id;
+    if (live && player.paused === false) {
+      player.pause();
+      return;
+    }
+    if (live && player.status !== "ended") {
+      player.play().catch(() => {});
+      return;
+    }
+    const result = this.#results.find((r) => r.id === id);
+    if (result) this.#previews.set(id, { title: result.title, artist: result.artist, thumbnailUrl: result.thumbnailUrl });
+    const token = ++this.#previewToken;
+    this.#loadingPreview = id;
+    this.paintPreview();
+    try {
+      await invoke("preview_track", { id });
+    } catch (err) {
+      if (token === this.#previewToken && errText(err) !== "superseded") toast(`Couldn't preview “${result?.title ?? "this track"}”: ${errText(err)}`);
+    } finally {
+      if (token === this.#previewToken) {
+        this.#loadingPreview = null;
+        this.paintPreview();
+      }
+    }
+  }
+
+  paintPreview() {
+    const playing = !player.paused;
+    for (const row of $("#dlList").children) {
+      const btn = row.querySelector(".dl-play");
+      if (!btn) continue;
+      const loading = this.#loadingPreview === row.dataset.id;
+      const live = !loading && player.fileId === PREVIEW_PREFIX + row.dataset.id;
+      row.classList.toggle("previewing", live || loading);
+      btn.classList.toggle("loading", loading);
+      btn.classList.toggle("live", live);
+      const want = loading ? "spinner" : live && playing ? "pause" : "play";
+      if (btn.dataset.state === want) continue;
+      btn.dataset.state = want;
+      btn.innerHTML = want === "spinner" ? `<span class="spinner"></span>` : icon(want);
+      btn.ariaLabel = `${want === "pause" ? "Pause" : "Preview"} ${row.querySelector(".t-title").textContent}`;
+    }
+  }
+
+  press(id) {
+    const job = this.#jobs.get(id);
+    if (isBusy(job)) return;
+    if (job?.status === "done") {
+      setView({ type: "library", path: [DOWNLOADS_FOLDER] });
+      return;
+    }
+    this.download(id);
+  }
+
+  async download(id) {
+    const result = this.#results.find((r) => r.id === id);
+    this.#setJob(id, { status: "queued", progress: 0, error: "", title: result?.title || "this track" });
+    try {
+      if (!(await invoke("downloader_download", { id }))) throw "search for this track again, then retry";
+    } catch (err) {
+      this.#setJob(id, { status: "error", error: errText(err) });
+      toast(`Couldn't download “${this.#jobs.get(id).title}”: ${errText(err)}`);
+    }
+  }
+
+  async #onProgress(e) {
+    if (!e?.id) return;
+    const prev = this.#jobs.get(e.id);
+    if (prev?.status === "done" && e.status !== "done") return;
+    this.#setJob(e.id, { status: e.status, progress: e.progress || 0, error: e.error || "", fresh: e.status === "done" });
+    const title = this.#jobs.get(e.id).title || "track";
+    if (e.status === "done") {
+      toast(`Downloaded “${title}” to your Library`);
+      await loadLibrary();
+    } else if (e.status === "error") {
+      toast(`Couldn't download “${title}”: ${e.error || "unknown error"}`);
+    }
+  }
+
+  #setJob(id, patch) {
+    this.#jobs.set(id, { ...(this.#jobs.get(id) || {}), ...patch });
+    this.#paintRow(id);
+    $("#dlCount").textContent = this.activeCount || "";
+    if (this.isOpen) $("#viewSub").textContent = this.summary();
+  }
+
+  #paintRow(id) {
+    const row = [...$("#dlList").children].find((el) => el.dataset.id === id);
+    const result = this.#results.find((r) => r.id === id);
+    if (!row || !result) return;
+    const job = this.#jobs.get(id);
+    const btn = row.querySelector(".dl-btn");
+    if (job?.status === "downloading" && btn?.classList.contains("downloading")) {
+      const pct = Math.round((job.progress || 0) * 100);
+      btn.style.setProperty("--p", `${pct}%`);
+      btn.querySelector(".dl-label").textContent = pct ? `${pct}%` : "Starting…";
+      return;
+    }
+    row.classList.toggle("is-done", job?.status === "done");
+    row.querySelector(".col-dl").innerHTML = this.#buttonHTML(result, job);
+    row.querySelector(".t-artist").outerHTML = this.#metaHTML(result, job);
+    if (job?.fresh) job.fresh = false;
+  }
+
+  #buttonHTML(r, job) {
+    const name = esc(r.title);
+    switch (job?.status) {
+      case "queued":
+        return `<button class="btn dl-btn busy" aria-busy="true" aria-label="Waiting to download ${name}"><span class="spinner"></span><span class="dl-label">Waiting…</span></button>`;
+      case "downloading": {
+        const pct = Math.round((job.progress || 0) * 100);
+        return `<button class="btn dl-btn busy downloading" style="--p:${pct}%" aria-busy="true" aria-label="Downloading ${name}"><span class="spinner"></span><span class="dl-label">${pct ? `${pct}%` : "Starting…"}</span></button>`;
+      }
+      case "done":
+        return `<button class="btn dl-btn done${job.fresh ? " fresh" : ""}" title="Open in Library" aria-label="${name} is in your Library">${icon("check")}<span>In Library</span></button>`;
+      case "error":
+        return `<button class="btn dl-btn failed" title="${esc(job.error || "The download failed")} — click to retry" aria-label="Retry downloading ${name}">${icon("retry")}<span>Retry</span></button>`;
+      default:
+        return `<button class="btn dl-btn" aria-label="Download ${name}">${icon("download")}<span>Download</span></button>`;
+    }
+  }
+
+  #metaHTML(r, job) {
+    if (job?.status === "error") {
+      const msg = esc(job.error || "The download failed");
+      return `<span class="t-artist dl-err" title="${msg}">${msg}</span>`;
+    }
+    return `<span class="t-artist">${esc(r.artist)}</span>`;
+  }
+
+  #rowHTML(r, i) {
+    const job = this.#jobs.get(r.id);
+    const art = r.thumbnailUrl ? `<img src="${esc(r.thumbnailUrl)}" alt="" draggable="false" loading="lazy" onerror="this.remove()">` : "";
+    return `<li class="dl-row${job?.status === "done" ? " is-done" : ""}" data-id="${esc(r.id)}">
+      <span class="col-num"><span class="num">${i + 1}</span></span>
+      <span class="col-title">
+        <span class="art" style="--h:${hue(r.artist + r.title)}">${icon("music")}${art}<button class="dl-play" aria-label="Preview ${esc(r.title)}">${icon("play")}</button></span>
+        <span class="tt">
+          <span class="t-title" title="${esc(r.title)}">${esc(r.title)}</span>
+          ${this.#metaHTML(r, job)}
+        </span>
+      </span>
+      <span class="col-stat" title="${(r.likeCount || 0).toLocaleString()} likes">${icon("heart")}${fmtCount(r.likeCount)}</span>
+      <span class="col-stat" title="${(r.repostCount || 0).toLocaleString()} reposts">${icon("repost")}${fmtCount(r.repostCount)}</span>
+      <span class="col-dur">${r.durationMs ? fmtTime(r.durationMs / 1000) : "–"}</span>
+      <span class="col-dl">${this.#buttonHTML(r, job)}</span>
+    </li>`;
+  }
+
+  #stateHTML() {
+    const q = esc(this.#query);
+    switch (this.#status) {
+      case "loading":
+        return `<div class="empty-icon"><span class="spinner"></span></div>
+          <h2>Searching SoundCloud…</h2>
+          <p>Looking for “${q}”.</p>`;
+      case "error":
+        return `<div class="empty-icon">${icon("alert")}</div>
+          <h2>Search failed</h2>
+          <p>${esc(this.#error)}</p>
+          <div class="empty-actions"><button class="btn" data-dl-retry>${icon("retry")}<span>Try again</span></button></div>`;
+      case "done":
+        return `<div class="empty-icon">${icon("search")}</div>
+          <h2>No results</h2>
+          <p>Nothing on SoundCloud that can be downloaded matches “${q}”.</p>`;
+      default:
+        return `<div class="empty-icon">${icon("download")}</div>
+          <h2>Find music to download</h2>
+          <p>Search SoundCloud for a song or artist. Downloads are saved to Wave's data folder and show up in your Library.</p>
+          <p class="hint">Type above and press Enter</p>`;
+    }
+  }
+
+  render() {
+    if (!this.isOpen) return;
+    const box = $("#dlState");
+    const showList = this.#status === "done" && this.#results.length > 0;
+    $("#dlHead").hidden = !showList;
+    box.hidden = showList;
+    box.classList.toggle("error", this.#status === "error");
+    if (showList) {
+      if (this.#rendered !== this.#results) {
+        $("#dlList").innerHTML = this.#results.map((r, i) => this.#rowHTML(r, i)).join("");
+        this.#rendered = this.#results;
+        this.paintPreview();
+      }
+    } else {
+      $("#dlList").innerHTML = "";
+      this.#rendered = null;
+      box.innerHTML = this.#stateHTML();
+    }
+    $("#viewSub").textContent = this.summary();
+  }
+}
+
+const downloader = new Downloader();
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 const BACKEND_LABELS = { starting: "Backend starting", connected: "Backend connected", offline: "Backend offline" };
@@ -2645,6 +3077,8 @@ async function loadFromBackend() {
     if (typeof playback.volume === "number") state.volume = Math.min(1, Math.max(0, playback.volume));
     if (typeof playback.muted === "boolean") state.muted = playback.muted;
     renderVolume();
+    if (typeof settings.interface?.playlistCovers === "boolean") state.playlistCovers = settings.interface.playlistCovers;
+    $("#playlistCoversSetting").checked = state.playlistCovers;
     if (settings.interface?.showQueue) {
       const app = $(".app");
       app.classList.add("no-anim");
